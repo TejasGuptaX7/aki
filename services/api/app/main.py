@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 import logging
 import uuid
 
@@ -8,18 +10,34 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
+from app.agent_runtime import hibernation_loop, shutdown_all
 from app.config import get_settings
 from app.limits import limiter
-from app.routes import connections, health, me, webhooks
+from app.routes import chat, connections, health, me, webhooks
 
 settings = get_settings()
 log = logging.getLogger("aki")
+
+
+@contextlib.asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Background tasks: hibernate idle per-org Hermes containers."""
+    task = asyncio.create_task(hibernation_loop())
+    try:
+        yield
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        await shutdown_all()
+
 
 app = FastAPI(
     title="Aki API",
     version="0.1.0",
     docs_url="/docs" if settings.app_env != "prod" else None,
     redoc_url="/redoc" if settings.app_env != "prod" else None,
+    lifespan=lifespan,
 )
 
 # Rate limiting (slowapi)
@@ -64,3 +82,4 @@ app.include_router(health.router)
 app.include_router(me.router)
 app.include_router(webhooks.router)
 app.include_router(connections.router)
+app.include_router(chat.router)

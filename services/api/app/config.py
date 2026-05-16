@@ -53,6 +53,8 @@ class Settings(BaseSettings):
     hermes_data_dir: str = "/var/lib/aki/hermes"
     hermes_idle_minutes: int = 15
     agent_runtime: Literal["local", "railway", "modal"] = "local"
+    hermes_model_provider: str = "custom"   # Hermes 0.13 'provider' name
+    hermes_model_name: str = "gpt-5"
 
     # Redis (per-org lifecycle locks, NOTIFY fan-out cache)
     redis_url: str = "redis://localhost:6379/0"
