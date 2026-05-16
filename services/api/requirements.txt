@@ -28,3 +28,8 @@ alembic>=1.13
 httpx>=0.27
 pyjwt[crypto]>=2.8
 structlog>=24.1
+greenlet>=3.0          # required by SQLAlchemy async
+# ─── Phase 2a: tenancy plumbing ──────────────────────────────────────────
+redis>=5.0
+svix>=1.34
+slowapi>=0.1.9         # rate limiting; in-memory backend, swap to Redis in prod
