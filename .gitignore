@@ -1,9 +1,25 @@
 node_modules/
 .venv/
+venv/
 .env
 .env.local
+.env.*.local
 .DS_Store
 *.pyc
 __pycache__/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
 .next/
 dist/
+build/
+
+# Agent harness artifacts (not product code)
+.clean/
+.clean-agent/
+.clean-worktrees/
+.context/
+/AGENTS.md
+/LEARNINGS.md
+

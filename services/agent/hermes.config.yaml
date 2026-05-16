@@ -1,0 +1,35 @@
+# Hermes per-org config template. The control plane materializes one of
+# these per organization into ${HERMES_DATA_DIR}/<org_id>/hermes.config.yaml
+# before booting the process. Do not check secrets in here.
+
+version: "0.4.0"
+
+gateway:
+  host: 0.0.0.0
+  port: 8080
+  api_compat: openai          # serves /v1/chat/completions
+  streaming: true
+  prompt_caching: true
+
+model:
+  provider: anthropic         # set per-org via `hermes model`
+  name: claude-opus-4-6       # placeholder; control plane picks the active model
+
+memory:
+  enabled: true
+  # Hermes hydrates these from Postgres org_memory at boot via the sync skill.
+  files:
+    - MEMORY.md
+    - USER.md
+
+skills:
+  directory: ./skills
+
+mcp:
+  servers: []                 # appended at boot from the org's `connections` rows
+
+cron:
+  enabled: true
+
+subagents:
+  enabled: true
