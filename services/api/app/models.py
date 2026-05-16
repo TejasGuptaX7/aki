@@ -52,7 +52,6 @@ class Connection(Base):
         PgUUID(as_uuid=True), ForeignKey("organizations.id"), index=True
     )
     provider: Mapped[str] = mapped_column(String(64))     # gmail | notion | …
-    layer: Mapped[str] = mapped_column(String(32))        # native | composio | custom
     external_account_id: Mapped[str | None] = mapped_column(String(255))
     scopes: Mapped[list] = mapped_column(JSONB, default=list)
     config: Mapped[dict] = mapped_column(JSONB, default=dict)

@@ -33,16 +33,14 @@ async def _get_jwks() -> dict:
 
 
 async def verify(request: Request) -> Principal:
-    # Dev bypass: skip JWT if Clerk isn't configured and a dev header is set.
-    if settings.app_env == "dev" and not settings.clerk_jwt_issuer:
-        dev_user = request.headers.get("X-Dev-User-Id", "user_dev")
+    # Dev bypass: explicit opt-in via BOTH app_env=dev AND
+    # ALLOW_DEV_AUTH_BYPASS=true. Two checks so a single env misconfiguration
+    # in production doesn't let an attacker claim any org by passing a header.
+    if settings.app_env == "dev" and settings.allow_dev_auth_bypass:
         dev_org = request.headers.get("X-Dev-Org-Id")
-        if not dev_org:
-            raise HTTPException(
-                status.HTTP_401_UNAUTHORIZED,
-                "X-Dev-Org-Id required when Clerk is not configured",
-            )
-        return Principal(user_id=dev_user, organization_id=UUID(dev_org))
+        if dev_org:
+            dev_user = request.headers.get("X-Dev-User-Id", "user_dev")
+            return Principal(user_id=dev_user, organization_id=UUID(dev_org))
 
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
