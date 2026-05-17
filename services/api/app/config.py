@@ -74,6 +74,11 @@ class Settings(BaseSettings):
     composio_base_url: str = "https://backend.composio.dev"
     composio_webhook_secret: str | None = None
     composio_gmail_auth_config_id: str | None = None
+    composio_slack_auth_config_id: str | None = None
+
+    # Browser Use Cloud — long-tail no-API tools.
+    browser_use_api_key: str | None = None
+    browser_use_mcp_base_url: str = "https://api.browser-use.com"
 
 
     @field_validator("cors_origins", mode="before")

@@ -51,9 +51,26 @@ async def materialize_mcp_servers(
             }
         )
 
+    seen_browser = False
     for r in rows:
         cfg = r.config or {}
-        if cfg.get("source") == "custom" and cfg.get("mcp_url"):
+        source = cfg.get("source")
+
+        if source == "browser_use" and not seen_browser and settings.browser_use_api_key:
+            # Browser Use Cloud — one shared MCP endpoint, agent creates per-call
+            # sessions via the run_session tool. Per-org isolation is enforced
+            # by Browser Use's session model; we pass org_id as a tag.
+            servers.append(
+                {
+                    "name": "browser",
+                    "transport": "http",
+                    "url": "https://api.browser-use.com/v3/mcp",
+                    "headers": {"x-browser-use-api-key": settings.browser_use_api_key},
+                }
+            )
+            seen_browser = True
+
+        elif source == "custom" and cfg.get("mcp_url"):
             entry: dict[str, Any] = {
                 "name": r.provider,
                 "transport": cfg.get("transport", "http"),

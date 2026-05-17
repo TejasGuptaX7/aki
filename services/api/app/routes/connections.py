@@ -71,9 +71,8 @@ async def oauth_start(
         raise HTTPException(503, "COMPOSIO_API_KEY not configured")
 
     redirect = f"{settings.api_base_url}/connections/oauth/callback"
-    auth_config_id = auth_config_id_for(provider)
     link = await get_composio_client().initiate_oauth(
-        principal.organization_id, auth_config_id, redirect
+        principal.organization_id, provider, redirect
     )
 
     db.add(
@@ -86,7 +85,7 @@ async def oauth_start(
             config={
                 "source": "composio",
                 "connected_account_id": link.connected_account_id,
-                "auth_config_id": auth_config_id,
+                "auth_config_id": auth_config_id_for(provider),
             },
             status="pending",
         )
@@ -97,6 +96,74 @@ async def oauth_start(
         "url": link.redirect_url,
         "connected_account_id": link.connected_account_id,
     }
+
+
+@router.post("/browser/enable", status_code=status.HTTP_201_CREATED)
+@limiter.limit(lambda: get_settings().rate_limit_oauth)
+async def enable_browser(
+    request: Request,
+    principal: Principal = Depends(get_principal),
+    db: AsyncSession = Depends(get_session),
+) -> dict:
+    """Toggle Browser Use Cloud on for this org. No OAuth — the API key
+    is ours; per-org isolation is Browser Use's session model."""
+    if not get_settings().browser_use_api_key:
+        raise HTTPException(503, "BROWSER_USE_API_KEY not configured")
+
+    existing = (
+        await db.execute(
+            select(Connection).where(
+                Connection.organization_id == principal.organization_id,
+                Connection.provider == "browser",
+            )
+        )
+    ).scalar_one_or_none()
+
+    if existing is None:
+        db.add(
+            Connection(
+                id=uuid4(),
+                organization_id=principal.organization_id,
+                provider="browser",
+                external_account_id=None,
+                scopes=[],
+                config={"source": "browser_use"},
+                status="active",
+            )
+        )
+    else:
+        existing.status = "active"
+        existing.config = {**(existing.config or {}), "source": "browser_use"}
+
+    await db.execute(
+        text("SELECT pg_notify('org_connections_changed', :oid)"),
+        {"oid": str(principal.organization_id)},
+    )
+    await db.commit()
+
+    return {"status": "active", "provider": "browser"}
+
+
+@router.post("/browser/disable", status_code=status.HTTP_204_NO_CONTENT)
+async def disable_browser(
+    principal: Principal = Depends(get_principal),
+    db: AsyncSession = Depends(get_session),
+) -> None:
+    existing = (
+        await db.execute(
+            select(Connection).where(
+                Connection.organization_id == principal.organization_id,
+                Connection.provider == "browser",
+            )
+        )
+    ).scalar_one_or_none()
+    if existing:
+        existing.status = "disabled"
+        await db.execute(
+            text("SELECT pg_notify('org_connections_changed', :oid)"),
+            {"oid": str(principal.organization_id)},
+        )
+        await db.commit()
 
 
 @router.get("/oauth/callback")
