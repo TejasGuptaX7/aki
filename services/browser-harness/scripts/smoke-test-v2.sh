@@ -93,7 +93,7 @@ mcp_call() {
     -H "Authorization: Bearer ${KEY}" \
     -H "X-Aki-Org-Id: $org" -H "X-Aki-Agent-Id: $agent" \
     -H "Content-Type: application/json" \
-    "${extra[@]}" \
+    ${extra[@]+"${extra[@]}"} \
     -d "$body" \
     "${URL}/mcp"
 }
