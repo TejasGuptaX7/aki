@@ -50,7 +50,15 @@ Slack:
   tell the user to install the bot via the Connect page rather than
   posting as them.
 - Bots can only post in channels they've been invited to. If a post
-  fails with `not_in_channel`, ask the user to /invite the bot first.
+  fails with `not_in_channel`:
+    1. First call the slackbot toolkit's auth.test (or users.info on the
+       bot's own user_id from auth.test) to find the bot's actual
+       username in this workspace. DO NOT GUESS the name — never tell
+       the user to "/invite @slackbot" or "/invite @aki"; the real name
+       depends on what the Composio Slack app is registered as.
+    2. Tell the user the exact `/invite @<real-bot-name>` command to
+       run, using the username you just looked up.
+    3. After they invite, retry the post.
 
 Gmail and other Composio tools: act on behalf of the user as expected.
 
