@@ -24,9 +24,39 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Aki — a small letter, doing large work",
+  metadataBase: new URL(
+    process.env.NEXT_PUBLIC_SITE_URL ?? "https://aki.dev",
+  ),
+  title: {
+    default: "Aki — named agents your team can DM in Slack",
+    template: "%s",
+  },
   description:
-    "Aki connects to your team's systems, takes a brief in your voice, and works the backlog through the night. Every action cites its source. You decide what stands.",
+    "Spin up named agents your team can DM in Slack. Each one runs the work, cites its sources, and asks before anything irreversible. Free during beta.",
+  keywords: [
+    "AI agents", "Slack bot", "autonomous agents", "AI for teams",
+    "AI assistant", "AI coworker", "agent workspace",
+  ],
+  openGraph: {
+    type: "website",
+    siteName: "Aki",
+    title: "Aki — named agents your team can DM in Slack",
+    description:
+      "Spin up named agents your team can DM in Slack. Each one runs the work, cites its sources, and asks before anything irreversible.",
+    // TODO(founder): supply /public/og-default.png (1200x630). For now Next
+    // will skip og:image rather than render a broken preview.
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Aki — named agents your team can DM in Slack",
+    description:
+      "Spin up named agents your team can DM in Slack. Free during beta.",
+  },
+  icons: {
+    // Reuses the existing /apps/web/src/app/favicon.ico shipped with the
+    // scaffold. Founder should replace with a brand favicon eventually.
+    icon: "/favicon.ico",
+  },
 };
 
 export default function RootLayout({

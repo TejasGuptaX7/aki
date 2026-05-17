@@ -2,54 +2,21 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { Show, SignInButton, SignUpButton, UserButton } from "@clerk/nextjs";
+import { Show, SignUpButton } from "@clerk/nextjs";
+import { theme } from "@/lib/theme";
+import { MarketingShell } from "@/components/MarketingShell";
 
 /**
- * Aki landing — direction 03 · II — Glyph (refined).
+ * Aki landing — Glyph II identity, concrete product framing.
  *
- * Ported verbatim from /tmp/aki-design/aki/project/directions/glyph2.jsx
- * (Claude Design handoff). Display = Source Serif 4 (variable font wired in
- * layout.tsx), body = Geist, mono = JetBrains Mono. The hero glyph is a giant
- * roman two-story 'a' acting as a mask over a live canvas grain field.
- *
- * Inline styles are intentional — they came from the design prototype and
- * matter for pixel-fidelity. Don't tailwindify without checking against the
- * source.
+ * The brand pieces (Source Serif display, animated grain canvas inside a
+ * boxed glyph, lime accent) live here. Sections walk the reader from
+ * "what is this" → "how does it work" → "how do you trust it" → CTA.
+ * Inline styles are intentional and match the rest of the marketing
+ * surfaces.
  */
 
-const theme = {
-  bg: "#15161a",
-  bgSoft: "#1d1f24",
-  ink: "#f1ede0",
-  inkLede: "#e3dcc5",
-  inkDim: "rgba(241,237,224,0.66)",
-  inkFaint: "rgba(241,237,224,0.36)",
-  hair: "rgba(241,237,224,0.12)",
-  hairSoft: "rgba(241,237,224,0.06)",
-  accent: "#c5ec4f",
-  accentDim: "rgba(197,236,79,0.18)",
-  display: "var(--font-display), 'Times New Roman', serif",
-  body: "var(--font-body), system-ui, sans-serif",
-  mono: "var(--font-mono), ui-monospace, monospace",
-};
-
-// ─── shared: rAF clock hook ───────────────────────────────────────────────
-function useTick(): number {
-  const [t, setT] = React.useState(0);
-  React.useEffect(() => {
-    let raf = 0;
-    const t0 = performance.now();
-    const loop = (now: number) => {
-      setT(now - t0);
-      raf = requestAnimationFrame(loop);
-    };
-    raf = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(raf);
-  }, []);
-  return t;
-}
-
-// ─── shared: service icon set ─────────────────────────────────────────────
+// ─── shared service glyphs (connectors strip) ────────────────────────────
 type SvcKind =
   | "mail" | "chat" | "calendar" | "doc" | "db"
   | "git" | "ticket" | "crm" | "cloud" | "finance";
@@ -71,14 +38,12 @@ function SvcGlyph({ kind, size = 20, color = "currentColor" }: { kind: SvcKind; 
   }
 }
 
-// ─── hero canvas: square of moving grain + sparks ────────────────────────
+// ─── hero canvas: grain field inside a boxed square ──────────────────────
 //
-// Earlier this was an SVG <mask> that cut the canvas into the letter 'a'.
-// That looks crisp in Stitch's preview but Safari (and sometimes Chrome)
-// fail to render canvas content inside SVG foreignObject masks — leaving
-// just the letter outline with no grain inside. Plain square grain renders
-// reliably and matches what the Stitch design preview actually showed.
-function GlyphMarkII({ size = 760 }: { size?: number }) {
+// Earlier this was an SVG <mask> cutting the canvas into the letter 'a'.
+// Safari and sometimes Chrome fail to render canvas inside SVG masks —
+// leaving just the outline. Plain square grain renders reliably.
+function GlyphMarkII({ size = 620 }: { size?: number }) {
   const ref = React.useRef<HTMLCanvasElement | null>(null);
 
   React.useEffect(() => {
@@ -92,32 +57,21 @@ function GlyphMarkII({ size = 760 }: { size?: number }) {
     if (!ctx) return;
     ctx.scale(dpr, dpr);
 
-    const NSPARK = 600;
-    const NDUST = 2400;
+    const NSPARK = 500;
+    const NDUST = 2000;
     const sparks = new Array(NSPARK).fill(0).map(() => ({
-      x: Math.random() * W,
-      y: Math.random() * H,
-      vx: (Math.random() - 0.5) * 0.10,
-      vy: (Math.random() - 0.5) * 0.10,
+      x: Math.random() * W, y: Math.random() * H,
+      vx: (Math.random() - 0.5) * 0.10, vy: (Math.random() - 0.5) * 0.10,
       ph: Math.random() * Math.PI * 2,
-      hue: 70 + Math.random() * 20,
-      sat: 70 + Math.random() * 20,
-      lit: 75 + Math.random() * 15,
+      hue: 70 + Math.random() * 20, sat: 70 + Math.random() * 20, lit: 75 + Math.random() * 15,
     }));
     const dust = new Array(NDUST).fill(0).map(() => ({
-      x: Math.random() * W,
-      y: Math.random() * H,
-      vx: (Math.random() - 0.5) * 0.05,
-      vy: (Math.random() - 0.5) * 0.05,
-      ph: Math.random() * Math.PI * 2,
-      bri: 0.4 + Math.random() * 0.4,
+      x: Math.random() * W, y: Math.random() * H,
+      vx: (Math.random() - 0.5) * 0.05, vy: (Math.random() - 0.5) * 0.05,
+      ph: Math.random() * Math.PI * 2, bri: 0.4 + Math.random() * 0.4,
     }));
-    let raf = 0;
-    let alive = true;
-    let paused = false;
+    let raf = 0; let alive = true; let paused = false;
 
-    // Pause the rAF loop when the tab is hidden so 3000 particles don't
-    // burn frames in the background and grow the JS heap over hours.
     function onVisChange() {
       paused = document.visibilityState === "hidden";
       if (!paused && alive) raf = requestAnimationFrame(frame);
@@ -129,7 +83,6 @@ function GlyphMarkII({ size = 760 }: { size?: number }) {
       if (paused) return;
       ctx.fillStyle = "rgba(21,22,26,0.22)";
       ctx.fillRect(0, 0, W, H);
-
       for (let i = 0; i < NDUST; i++) {
         const p = dust[i];
         p.x += p.vx + Math.sin(t * 0.0006 + p.ph) * 0.35;
@@ -140,7 +93,6 @@ function GlyphMarkII({ size = 760 }: { size?: number }) {
         ctx.fillStyle = `rgba(241,237,224,${a})`;
         ctx.fillRect(p.x | 0, p.y | 0, 1, 1);
       }
-
       for (let i = 0; i < NSPARK; i++) {
         const p = sparks[i];
         p.x += p.vx + Math.sin(t * 0.0009 + p.ph) * 0.55;
@@ -165,139 +117,24 @@ function GlyphMarkII({ size = 760 }: { size?: number }) {
 
   return (
     <div style={{
-      position: "relative",
-      width: size, height: size,
-      border: `1px solid ${theme.hair}`,
-      overflow: "hidden",
-      background: "#0f1014",
+      position: "relative", width: "100%", maxWidth: size, aspectRatio: "1 / 1",
+      border: `1px solid ${theme.hair}`, overflow: "hidden", background: "#0f1014",
     }}>
       <canvas ref={ref} style={{ display: "block", width: "100%", height: "100%" }}/>
-
-      {/* Type-specimen tick marks on the right edge — kept from glyph2 because
-          they made the square feel intentional, like a printer's bracket. */}
-      <div style={{ position: "absolute", inset: 0, pointerEvents: "none", fontFamily: theme.mono, fontSize: 10, color: theme.inkFaint, letterSpacing: "0.14em" }}>
+      <div style={{
+        position: "absolute", inset: 0, pointerEvents: "none",
+        fontFamily: theme.mono, fontSize: 10, color: theme.inkFaint,
+        letterSpacing: "0.14em",
+      }}>
         {[["baseline", "83%"], ["x-height", "46%"], ["cap", "20%"]].map(([label, top]) => (
-          <div key={label} style={{ position: "absolute", left: -8, right: -8, top, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div key={label} style={{
+            position: "absolute", left: -8, right: -8, top,
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+          }}>
             <span style={{ width: 16, height: 1, background: theme.hair }}/>
             <span style={{ width: 16, height: 1, background: theme.hair }}/>
           </div>
         ))}
-        <span style={{ position: "absolute", top: "83%", right: -58, transform: "translateY(-50%)" }}>baseline</span>
-        <span style={{ position: "absolute", top: "46%", right: -58, transform: "translateY(-50%)" }}>x-height</span>
-        <span style={{ position: "absolute", top: "20%", right: -58, transform: "translateY(-50%)" }}>cap</span>
-      </div>
-    </div>
-  );
-}
-
-// ─── feature scene: a single decision ─────────────────────────────────────
-function GlyphIIDecision() {
-  const t = useTick();
-  const DUR = 10000;
-  const p = (t % DUR) / DUR;
-
-  const A = Math.min(1, Math.max(0, (p - 0.05) / 0.20));
-  const B = Math.min(1, Math.max(0, (p - 0.35) / 0.18));
-  const C = Math.min(1, Math.max(0, (p - 0.60) / 0.20));
-  const fade = p > 0.96 ? 1 - (p - 0.96) / 0.04 : 1;
-
-  const cell = (title: string, kicker: string, body: React.ReactNode, vis: number) => (
-    <div style={{ opacity: vis, transform: `translateY(${(1 - vis) * 8}px)` }}>
-      <div style={{ fontFamily: theme.mono, fontSize: 11, color: theme.accent, letterSpacing: "0.22em", textTransform: "uppercase" }}>{kicker}</div>
-      <div style={{ marginTop: 14, fontFamily: theme.display, fontStyle: "italic", fontWeight: 500, fontSize: 34, lineHeight: 1.08, letterSpacing: "-0.015em" }}>{title}</div>
-      <div style={{ marginTop: 18 }}>{body}</div>
-    </div>
-  );
-
-  return (
-    <div style={{
-      position: "relative",
-      background: theme.bgSoft,
-      border: `1px solid ${theme.hair}`,
-      padding: "36px 40px 40px",
-      opacity: fade,
-    }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 28 }}>
-        <div style={{ fontFamily: theme.mono, fontSize: 11, letterSpacing: "0.22em", textTransform: "uppercase", color: theme.inkFaint }}>
-          a single decision · trace #04812
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          {["inputs", "policy", "action"].map((label, i) => {
-            const v = [A, B, C][i];
-            return (
-              <div key={label} style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <span style={{ width: 8, height: 8, borderRadius: "50%", background: v > 0.5 ? theme.accent : theme.hair }}/>
-                <span style={{ fontFamily: theme.mono, fontSize: 10, color: v > 0.5 ? theme.ink : theme.inkFaint, letterSpacing: "0.16em", textTransform: "uppercase" }}>{label}</span>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 28px 1fr 28px 1fr", alignItems: "stretch", gap: 0 }}>
-        {cell(
-          "What it read.",
-          "inputs · 3",
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            {[
-              ["thread · 04 may", "Marcus to legal — “30-day exit on renewals, always.”"],
-              ["msa · §7.2", "Northwind renewal · auto-renew clause set at 90 days."],
-              ["apollon · MSA-2024", "precedent · 30-day exit + EU residency rider."],
-            ].map(([k, v], i) => (
-              <div key={i} style={{ paddingBottom: 12, borderBottom: `1px dashed ${theme.hair}` }}>
-                <div style={{ fontFamily: theme.mono, fontSize: 11, color: theme.inkDim, letterSpacing: "0.04em" }}>{k}</div>
-                <div style={{ marginTop: 4, fontFamily: theme.body, fontSize: 14, fontWeight: 400, color: theme.inkLede, lineHeight: 1.5 }}>{v}</div>
-              </div>
-            ))}
-          </div>,
-          A,
-        )}
-
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", opacity: B }}>
-          <svg width="24" height="24" viewBox="0 0 24 24"><path d="M3 12h17M14 6l6 6-6 6" fill="none" stroke={theme.accent} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
-        </div>
-
-        {cell(
-          "What you taught it.",
-          "policy · 1",
-          <div style={{
-            padding: "18px 18px",
-            background: theme.accentDim,
-            border: `1px solid rgba(197,236,79,0.32)`,
-          }}>
-            <div style={{ fontFamily: theme.mono, fontSize: 11, color: theme.inkFaint, letterSpacing: "0.18em", textTransform: "uppercase", marginBottom: 10 }}>
-              from your brief · vendor contracts
-            </div>
-            <div style={{ fontFamily: theme.display, fontStyle: "italic", fontWeight: 500, fontSize: 19, lineHeight: 1.45 }}>
-              &ldquo;Push back on any renewal clause longer than 30 days. Cite precedent. Loop in finance only if the counter is rejected.&rdquo;
-            </div>
-            <div style={{ marginTop: 14, fontFamily: theme.mono, fontSize: 11, color: theme.inkDim, letterSpacing: "0.04em" }}>
-              match · auto-renew &gt; 30d · confidence 0.96
-            </div>
-          </div>,
-          B,
-        )}
-
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", opacity: C }}>
-          <svg width="24" height="24" viewBox="0 0 24 24"><path d="M3 12h17M14 6l6 6-6 6" fill="none" stroke={theme.accent} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
-        </div>
-
-        {cell(
-          "What it did.",
-          "action · 1",
-          <div style={{ padding: "16px 18px", background: "rgba(241,237,224,0.04)", border: `1px solid ${theme.hair}` }}>
-            <div style={{ fontFamily: theme.mono, fontSize: 11, color: theme.inkFaint, letterSpacing: "0.18em", textTransform: "uppercase" }}>draft · reply</div>
-            <div style={{ marginTop: 8, fontFamily: theme.body, fontSize: 15, fontWeight: 400, lineHeight: 1.5, color: theme.ink }}>
-              Replied to Hana Lin asking for a 30-day exit on the v3 markup. Cited the Apollon precedent and the EU residency rider. Held the draft for your sign-off.
-            </div>
-            <div style={{ marginTop: 14, display: "flex", gap: 16, fontFamily: theme.mono, fontSize: 11, color: theme.inkDim, letterSpacing: "0.04em" }}>
-              <span>reversible · yes</span>
-              <span>cost · $0.012</span>
-              <span>time · 1.4s</span>
-            </div>
-          </div>,
-          C,
-        )}
       </div>
     </div>
   );
@@ -306,187 +143,539 @@ function GlyphIIDecision() {
 // ─── page ────────────────────────────────────────────────────────────────
 export default function Home() {
   return (
-    <div style={{
-      width: "100%",
-      minHeight: "100vh",
-      background: theme.bg,
-      color: theme.ink,
-      fontFamily: theme.body,
-      overflow: "auto",
-      position: "relative",
+    <MarketingShell>
+      <Hero/>
+      <Connectors/>
+      <HowItWorks/>
+      <AgentsMock/>
+      <TrustPillars/>
+      <SlackDemo/>
+      <FinalCTA/>
+    </MarketingShell>
+  );
+}
+
+// ─── hero ────────────────────────────────────────────────────────────────
+function Hero() {
+  return (
+    <section style={{ padding: "40px 56px 60px" }}>
+      <div className="aki-hero-grid" style={{
+        display: "grid", gridTemplateColumns: "1.05fr 720px 0.95fr",
+        gap: 40, alignItems: "center", minHeight: 620,
+      }}>
+        <div>
+          <div style={{
+            fontFamily: theme.mono, fontSize: 11, letterSpacing: "0.24em",
+            textTransform: "uppercase", color: theme.inkFaint, marginBottom: 20,
+          }}>
+            named agents · v 0.7 · free during beta
+          </div>
+          <h1 style={{
+            margin: 0, fontFamily: theme.display, fontWeight: 600,
+            fontSize: 64, lineHeight: 1, letterSpacing: "-0.025em",
+          }}>
+            Hire your first <span style={{ color: theme.accent, fontWeight: 700 }}>tireless</span>
+            <br/>
+            <span style={{ fontStyle: "italic", fontWeight: 500 }}>coworker.</span>
+          </h1>
+          <p style={{
+            marginTop: 22, fontFamily: theme.body, fontSize: 17,
+            lineHeight: 1.55, color: theme.inkDim, maxWidth: 360,
+          }}>
+            Aki agents live in your Slack and your stack. Each one runs the work,
+            shows the receipts, and asks before anything irreversible.
+          </p>
+        </div>
+
+        <div className="aki-hero-canvas" style={{ display: "flex", justifyContent: "center" }}>
+          <GlyphMarkII size={620}/>
+        </div>
+
+        <div className="aki-hero-cta" style={{ textAlign: "right" }}>
+          <div style={{
+            fontFamily: theme.body, fontSize: 17, fontWeight: 400,
+            lineHeight: 1.55, color: theme.inkLede, maxWidth: 320, marginLeft: "auto",
+          }}>
+            Spin up <em style={{ fontStyle: "italic", color: theme.ink }}>Aki Sales</em>,{" "}
+            <em style={{ fontStyle: "italic", color: theme.ink }}>Aki Recruiting</em>, or{" "}
+            <em style={{ fontStyle: "italic", color: theme.ink }}>Aki Ops</em> — each one
+            its own brief, its own connections, its own audit trail.
+          </div>
+          <div style={{
+            marginTop: 32, display: "flex", flexDirection: "column",
+            alignItems: "flex-end", gap: 12,
+          }}>
+            <Show when="signed-out">
+              <SignUpButton mode="modal" forceRedirectUrl="/onboarding">
+                <button style={primaryCTA}>Get on the beta</button>
+              </SignUpButton>
+            </Show>
+            <Show when="signed-in">
+              <Link href="/onboarding" style={{ ...primaryCTA, textDecoration: "none" }}>
+                Spin up an agent
+              </Link>
+            </Show>
+            <span style={{
+              fontFamily: theme.mono, fontSize: 11, color: theme.inkFaint,
+              letterSpacing: "0.16em", textTransform: "uppercase",
+            }}>free · no waitlist email · 5 min setup</span>
+          </div>
+        </div>
+      </div>
+
+      <style>{`
+        @media (max-width: 1080px) {
+          .aki-hero-grid {
+            grid-template-columns: 1fr !important;
+            text-align: center;
+          }
+          .aki-hero-grid > div { max-width: 620px; margin: 0 auto; }
+          .aki-hero-cta { text-align: center !important; }
+          .aki-hero-cta > div:last-child { align-items: center !important; }
+          .aki-hero-cta > div:first-child { margin: 0 auto !important; }
+        }
+        @media (max-width: 720px) {
+          .aki-hero-grid > div > h1 { font-size: 44px !important; }
+          .aki-hero-canvas { max-width: 100%; }
+        }
+      `}</style>
+    </section>
+  );
+}
+
+const primaryCTA: React.CSSProperties = {
+  background: theme.accent, color: theme.bg, border: "none",
+  fontFamily: theme.body, fontWeight: 600, fontSize: 15,
+  letterSpacing: "0.01em", padding: "14px 26px", borderRadius: 999,
+  cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 8,
+};
+
+// ─── connectors strip ────────────────────────────────────────────────────
+function Connectors() {
+  return (
+    <section style={{
+      padding: "20px 56px",
+      borderTop: `1px solid ${theme.hair}`,
+      borderBottom: `1px solid ${theme.hair}`,
     }}>
-      {/* nav */}
-      <nav style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "28px 56px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-          <span style={{ display: "inline-block", width: 28, height: 28, fontFamily: theme.display, fontWeight: 700, fontSize: 36, lineHeight: 0.78, color: theme.ink, letterSpacing: "-0.04em" }}>a</span>
-          <span style={{ fontFamily: theme.body, fontWeight: 600, fontSize: 16, letterSpacing: "0.04em" }}>aki</span>
-          <span style={{ fontFamily: theme.mono, fontSize: 11, color: theme.inkFaint, letterSpacing: "0.12em" }}>v 0.7</span>
+      <div className="aki-conn-row" style={{
+        display: "flex", justifyContent: "space-between", alignItems: "center",
+        gap: 24, flexWrap: "wrap",
+      }}>
+        <span style={{
+          fontFamily: theme.mono, fontSize: 11, color: theme.inkFaint,
+          letterSpacing: "0.18em", textTransform: "uppercase",
+        }}>connectors · scoped tokens · audited every call</span>
+        <div style={{ display: "flex", gap: 26 }}>
+          {(["mail", "chat", "calendar", "doc", "db", "git", "ticket", "crm", "cloud", "finance"] as SvcKind[]).map((k) => (
+            <SvcGlyph key={k} kind={k} size={20} color="rgba(241,237,224,0.62)"/>
+          ))}
         </div>
-        <div style={{ display: "flex", gap: 32, alignItems: "center", fontFamily: theme.body, fontSize: 14, fontWeight: 500, color: theme.inkDim }}>
-          <span>Product</span><span>Fieldwork</span><span>Pricing</span><span>Company</span>
-          <Show when="signed-out">
-            <SignInButton mode="modal">
-              <span style={{ color: theme.accent, cursor: "pointer" }}>Request access ⟶</span>
-            </SignInButton>
-          </Show>
-          <Show when="signed-in">
-            <Link href="/chat" style={{ color: theme.accent, textDecoration: "none" }}>Open app ⟶</Link>
-            <UserButton/>
-          </Show>
-        </div>
-      </nav>
+      </div>
+    </section>
+  );
+}
 
-      {/* hero */}
-      <section style={{ padding: "50px 56px 60px" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 780px 1fr", gap: 40, alignItems: "center", minHeight: 760 }}>
-          <div>
-            <div style={{ fontFamily: theme.mono, fontSize: 11, letterSpacing: "0.24em", textTransform: "uppercase", color: theme.inkFaint, marginBottom: 20 }}>
-              an agent · v 0.7 · private beta
+// ─── /01 · what it does ───────────────────────────────────────────────────
+function HowItWorks() {
+  const steps: { title: string; body: string; }[] = [
+    {
+      title: "Write the brief",
+      body: "Three questions in plain English. Who is this agent, what tools does it need, what's its first task. The brief becomes its system prompt — you can edit it any time.",
+    },
+    {
+      title: "Connect the tools",
+      body: "OAuth into Gmail, Slack, your CRM, your repo, whatever it needs. Scopes are minimal by default. Each connection is shared org-wide or pinned to one agent.",
+    },
+    {
+      title: "Let it run",
+      body: "DM it in Slack or chat with it in the app. Long tasks ping you when they finish. Anything that spends money or sends mail outside the team waits for your nod.",
+    },
+  ];
+  return (
+    <section style={{ padding: "80px 56px 40px" }}>
+      <div style={{
+        fontFamily: theme.mono, fontSize: 11, letterSpacing: "0.24em",
+        textTransform: "uppercase", color: theme.inkFaint,
+      }}>/01 · how it works</div>
+      <h2 style={{
+        margin: "18px 0 0", fontFamily: theme.display, fontWeight: 600,
+        fontSize: 52, lineHeight: 1.05, letterSpacing: "-0.025em", maxWidth: 920,
+      }}>
+        Three minutes to a brief.{" "}
+        <span style={{ fontStyle: "italic", fontWeight: 500 }}>The agent does the rest.</span>
+      </h2>
+
+      <div className="aki-steps-grid" style={{
+        display: "grid", gridTemplateColumns: "repeat(3, 1fr)",
+        gap: 32, marginTop: 56,
+      }}>
+        {steps.map((s, i) => (
+          <div key={s.title} style={{ borderTop: `1px solid ${theme.hair}`, paddingTop: 24 }}>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 14 }}>
+              <span style={{
+                fontFamily: theme.mono, fontSize: 11, color: theme.inkFaint,
+                letterSpacing: "0.16em",
+              }}>0{i + 1}</span>
+              <span style={{
+                fontFamily: theme.display, fontWeight: 600, fontSize: 32,
+                lineHeight: 1.05, letterSpacing: "-0.02em", color: theme.accent,
+              }}>{s.title}</span>
             </div>
-            <div style={{ fontFamily: theme.display, fontWeight: 600, fontSize: 72, lineHeight: 0.96, letterSpacing: "-0.025em" }}>
-              <span style={{ fontStyle: "italic", fontWeight: 500 }}>A small letter</span>
-              <span style={{ color: theme.inkDim, fontStyle: "italic", fontWeight: 500 }}>,</span><br/>
-              <span style={{ fontWeight: 600 }}>doing</span><br/>
-              <span style={{ color: theme.accent, fontWeight: 700 }}>large work.</span>
-            </div>
+            <p style={{
+              margin: "16px 0 0", fontFamily: theme.body, fontSize: 15,
+              lineHeight: 1.55, color: theme.inkLede, maxWidth: 360,
+            }}>{s.body}</p>
           </div>
+        ))}
+      </div>
 
-          <div style={{ display: "flex", justifyContent: "center" }}>
-            <GlyphMarkII size={720}/>
-          </div>
+      <style>{`
+        @media (max-width: 900px) {
+          .aki-steps-grid { grid-template-columns: 1fr; }
+        }
+      `}</style>
+    </section>
+  );
+}
 
-          <div style={{ textAlign: "right" }}>
-            <div style={{ fontFamily: theme.body, fontSize: 18, fontWeight: 400, lineHeight: 1.55, color: theme.inkLede, maxWidth: 300, marginLeft: "auto" }}>
-              Aki connects to your team&rsquo;s systems, takes a brief in your voice, and works the backlog through the night. Every action cites its source. You decide what stands.
-            </div>
-            <div style={{ marginTop: 32, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 12 }}>
-              <Show when="signed-out">
-                <SignUpButton mode="modal">
-                  <button style={{
-                    background: theme.accent, color: theme.bg, border: "none",
-                    fontFamily: theme.body, fontWeight: 600, fontSize: 15, letterSpacing: "0.01em",
-                    padding: "14px 24px", borderRadius: 999, cursor: "pointer",
-                  }}>Request access</button>
-                </SignUpButton>
-              </Show>
-              <Show when="signed-in">
-                <Link href="/chat" style={{
-                  background: theme.accent, color: theme.bg, border: "none",
-                  fontFamily: theme.body, fontWeight: 600, fontSize: 15, letterSpacing: "0.01em",
-                  padding: "14px 24px", borderRadius: 999, cursor: "pointer", textDecoration: "none",
-                }}>Open app ⟶</Link>
-              </Show>
-              <span style={{ fontFamily: theme.mono, fontSize: 11, color: theme.inkFaint, letterSpacing: "0.16em", textTransform: "uppercase" }}>
-                142 teams · no waitlist email
-              </span>
-            </div>
-          </div>
-        </div>
-      </section>
+// ─── /02 · agents page mock (stylised screenshot) ────────────────────────
+function AgentsMock() {
+  const agents = [
+    { name: "Aki Sales", brief: "Inbound demos · qualification · book on AE cal", since: "32 days · 412 actions", color: theme.accent },
+    { name: "Aki Recruiting", brief: "Sourcing for senior backend roles · reaches out cold", since: "18 days · 187 actions", color: "#9ec8ff" },
+    { name: "Aki Ops", brief: "Linear triage · stale tickets · weekly standup digest", since: "11 days · 96 actions", color: "#e3dcc5" },
+  ];
 
-      {/* connectors strip */}
-      <section style={{ padding: "20px 56px", borderTop: `1px solid ${theme.hair}`, borderBottom: `1px solid ${theme.hair}` }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span style={{ fontFamily: theme.mono, fontSize: 11, color: theme.inkFaint, letterSpacing: "0.18em", textTransform: "uppercase" }}>
-            14 connectors · scoped SSO
-          </span>
-          <div style={{ display: "flex", gap: 26 }}>
-            {(["mail", "chat", "calendar", "doc", "db", "git", "ticket", "crm", "cloud", "finance"] as SvcKind[]).map((k) => (
-              <SvcGlyph key={k} kind={k} size={20} color="rgba(241,237,224,0.62)"/>
-            ))}
-          </div>
-        </div>
-      </section>
+  return (
+    <section style={{ padding: "60px 56px" }}>
+      <div style={{
+        fontFamily: theme.mono, fontSize: 11, letterSpacing: "0.24em",
+        textTransform: "uppercase", color: theme.inkFaint,
+      }}>/02 · the workspace</div>
+      <h2 style={{
+        margin: "18px 0 32px", fontFamily: theme.display, fontWeight: 600,
+        fontSize: 52, lineHeight: 1.05, letterSpacing: "-0.025em", maxWidth: 820,
+      }}>
+        One workspace.{" "}
+        <span style={{ fontStyle: "italic", fontWeight: 500 }}>
+          A coworker per job to be done.
+        </span>
+      </h2>
 
-      {/* what it does */}
-      <section style={{ padding: "70px 56px 40px" }}>
-        <div style={{ fontFamily: theme.mono, fontSize: 11, letterSpacing: "0.24em", textTransform: "uppercase", color: theme.inkFaint }}>
-          /01 · what it does
-        </div>
-        <div style={{ marginTop: 18, fontFamily: theme.display, fontWeight: 600, fontSize: 60, lineHeight: 1.05, letterSpacing: "-0.025em", maxWidth: 980 }}>
-          Trained on your brief. Connected to your stack. <span style={{ fontStyle: "italic", fontWeight: 500 }}>Honest about every step it took.</span>
+      <div style={{
+        background: theme.bgSoft, border: `1px solid ${theme.hair}`,
+        padding: 4, borderRadius: 6, position: "relative",
+      }}>
+        {/* fake window chrome */}
+        <div style={{
+          display: "flex", alignItems: "center", gap: 8,
+          padding: "10px 14px", borderBottom: `1px solid ${theme.hair}`,
+        }}>
+          <span style={{ width: 10, height: 10, borderRadius: "50%", background: theme.hair }}/>
+          <span style={{ width: 10, height: 10, borderRadius: "50%", background: theme.hair }}/>
+          <span style={{ width: 10, height: 10, borderRadius: "50%", background: theme.hair }}/>
+          <span style={{
+            marginLeft: 18, fontFamily: theme.mono, fontSize: 11,
+            color: theme.inkFaint, letterSpacing: "0.12em",
+          }}>aki.dev/agents</span>
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 40, marginTop: 64 }}>
-          {[
-            ["Brief", "A short letter in plain language. Aki reads it like a contract."],
-            ["Connect", "Same access as a senior IC. Scoped tokens, audit per call."],
-            ["Cite", "Every action shows its inputs, its policy match, its receipt."],
-          ].map(([h, b], i) => (
-            <div key={h} style={{ borderTop: `1px solid ${theme.hair}`, paddingTop: 24 }}>
-              <div style={{ display: "flex", alignItems: "baseline", gap: 14 }}>
-                <span style={{ fontFamily: theme.mono, fontSize: 11, color: theme.inkFaint, letterSpacing: "0.16em" }}>0{i + 1}</span>
-                <span style={{ fontFamily: theme.display, fontWeight: 600, fontSize: 42, lineHeight: 1, letterSpacing: "-0.02em", color: theme.accent }}>{h}</span>
+        <div className="aki-mock-shell" style={{
+          display: "grid", gridTemplateColumns: "200px 1fr", minHeight: 440,
+        }}>
+          {/* sidebar */}
+          <div style={{
+            borderRight: `1px solid ${theme.hair}`,
+            padding: "20px 12px", display: "flex", flexDirection: "column", gap: 6,
+          }}>
+            <div style={{
+              fontFamily: theme.mono, fontSize: 10, color: theme.inkFaint,
+              letterSpacing: "0.22em", textTransform: "uppercase", padding: "0 8px 8px",
+            }}>agents</div>
+            {agents.map((a, i) => (
+              <div key={a.name} style={{
+                padding: "8px 10px", borderRadius: 6,
+                background: i === 0 ? "rgba(241,237,224,0.06)" : "transparent",
+                borderLeft: `2px solid ${i === 0 ? theme.accent : "transparent"}`,
+                display: "flex", alignItems: "center", gap: 10,
+                fontFamily: theme.body, fontSize: 13,
+                color: i === 0 ? theme.ink : theme.inkDim,
+              }}>
+                <span style={{
+                  width: 6, height: 6, borderRadius: "50%",
+                  background: i === 0 ? theme.accent : theme.inkFaint,
+                }}/>
+                <span>{a.name}</span>
               </div>
-              <div style={{ marginTop: 16, fontFamily: theme.body, fontSize: 16, fontWeight: 400, lineHeight: 1.55, color: theme.inkLede, maxWidth: 320 }}>{b}</div>
+            ))}
+            <div style={{
+              marginTop: 8, padding: "8px 10px",
+              border: `1px dashed ${theme.hair}`, borderRadius: 6,
+              fontFamily: theme.body, fontSize: 12, color: theme.inkDim, textAlign: "center",
+            }}>+ New agent</div>
+          </div>
+
+          {/* main: agent list */}
+          <div style={{ padding: "24px 28px" }}>
+            <div style={{
+              fontFamily: theme.mono, fontSize: 10, color: theme.inkFaint,
+              letterSpacing: "0.22em", textTransform: "uppercase", marginBottom: 14,
+            }}>active · 3</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {agents.map((a) => (
+                <div key={a.name} style={{
+                  padding: "14px 16px", background: theme.bg,
+                  border: `1px solid ${theme.hair}`,
+                  display: "grid", gridTemplateColumns: "1fr auto", gap: 14, alignItems: "center",
+                }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{
+                      fontFamily: theme.display, fontWeight: 600, fontSize: 18,
+                      letterSpacing: "-0.015em", color: theme.ink,
+                    }}>{a.name}</div>
+                    <div style={{
+                      marginTop: 4, fontFamily: theme.body, fontSize: 12,
+                      color: theme.inkDim, lineHeight: 1.4,
+                    }}>{a.brief}</div>
+                    <div style={{
+                      marginTop: 6, fontFamily: theme.mono, fontSize: 10,
+                      color: theme.inkFaint, letterSpacing: "0.14em",
+                    }}>{a.since}</div>
+                  </div>
+                  <span style={{
+                    fontFamily: theme.mono, fontSize: 10, color: a.color,
+                    letterSpacing: "0.18em", textTransform: "uppercase",
+                  }}>● active</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <style>{`
+        @media (max-width: 720px) {
+          .aki-mock-shell { grid-template-columns: 1fr !important; }
+          .aki-mock-shell > div:first-child { display: none; }
+        }
+      `}</style>
+    </section>
+  );
+}
+
+// ─── /03 · trust pillars ─────────────────────────────────────────────────
+function TrustPillars() {
+  const pillars = [
+    {
+      kicker: "isolation",
+      title: "Per-org sandbox. Per-agent process.",
+      body: "Each customer gets its own gVisor-sandboxed container. Each agent runs in its own OS process within that container. Postgres row-level security is the second-line defense — a bug can leak nothing across orgs.",
+    },
+    {
+      kicker: "audit",
+      title: "Every action is on the record.",
+      body: "A hash-chained log captures every tool call, every chat message, every consent decision. You can verify the chain locally with the content_hash + prev_hash fields — no trust required.",
+    },
+    {
+      kicker: "the money rule",
+      title: "Spend, send, irrevocable → ask first.",
+      body: "Agents have three consent tiers. Anything that costs money, sends mail outside the team, or can't be undone always waits for a human nod. You can tighten the rule — never loosen it past safe defaults.",
+    },
+  ];
+
+  return (
+    <section style={{ padding: "60px 56px" }}>
+      <div style={{
+        fontFamily: theme.mono, fontSize: 11, letterSpacing: "0.24em",
+        textTransform: "uppercase", color: theme.inkFaint,
+      }}>/03 · trust</div>
+      <h2 style={{
+        margin: "18px 0 32px", fontFamily: theme.display, fontWeight: 600,
+        fontSize: 52, lineHeight: 1.05, letterSpacing: "-0.025em", maxWidth: 820,
+      }}>
+        Built for the security buyer{" "}
+        <span style={{ fontStyle: "italic", fontWeight: 500 }}>before the buyer asked.</span>
+      </h2>
+
+      <div className="aki-pillars-grid" style={{
+        display: "grid", gridTemplateColumns: "repeat(3, 1fr)",
+        gap: 18, marginTop: 40,
+      }}>
+        {pillars.map((p) => (
+          <div key={p.kicker} style={{
+            padding: "26px 26px", background: theme.bgSoft,
+            border: `1px solid ${theme.hair}`,
+            display: "flex", flexDirection: "column", gap: 14,
+          }}>
+            <div style={{
+              fontFamily: theme.mono, fontSize: 10, color: theme.accent,
+              letterSpacing: "0.22em", textTransform: "uppercase",
+            }}>{p.kicker}</div>
+            <div style={{
+              fontFamily: theme.display, fontWeight: 600, fontSize: 22,
+              letterSpacing: "-0.015em", lineHeight: 1.2, color: theme.ink,
+            }}>{p.title}</div>
+            <div style={{
+              fontFamily: theme.body, fontSize: 14, color: theme.inkLede,
+              lineHeight: 1.55,
+            }}>{p.body}</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ marginTop: 22, textAlign: "right" }}>
+        <Link href="/trust" style={{
+          fontFamily: theme.mono, fontSize: 11, color: theme.accent,
+          letterSpacing: "0.18em", textTransform: "uppercase", textDecoration: "none",
+        }}>read the full trust page →</Link>
+      </div>
+
+      <style>{`
+        @media (max-width: 900px) {
+          .aki-pillars-grid { grid-template-columns: 1fr; }
+        }
+      `}</style>
+    </section>
+  );
+}
+
+// ─── /04 · Slack demo ────────────────────────────────────────────────────
+function SlackDemo() {
+  const lines: { who: string; whoColor?: string; text: React.ReactNode; tag?: string }[] = [
+    {
+      who: "Marcus",
+      text: <>@<b>aki-sales</b> what came in from the demo form today?</>,
+    },
+    {
+      who: "aki-sales",
+      whoColor: theme.accent,
+      text: <>3 demo requests since 9am. 2 look qualified — both engineering teams &gt; 50 people. Drafted replies with calendar links and held them for your approval in <a href="/approvals" style={{ color: theme.accent }}>approvals</a>. The third is a personal Gmail address; flagged for manual review.</>,
+      tag: "ran 4 tools · cited 3 sources · $0.018",
+    },
+    {
+      who: "Marcus",
+      text: <>Approve the two qualified ones. Skip the personal email.</>,
+    },
+    {
+      who: "aki-sales",
+      whoColor: theme.accent,
+      text: <>Done — both replies sent, both meetings on your AE&apos;s calendar for Thursday. Logged the personal email as &ldquo;manual review · 2026-05-18.&rdquo; Want a daily digest of these?</>,
+      tag: "approved · sent · logged",
+    },
+  ];
+
+  return (
+    <section style={{ padding: "60px 56px" }}>
+      <div style={{
+        fontFamily: theme.mono, fontSize: 11, letterSpacing: "0.24em",
+        textTransform: "uppercase", color: theme.inkFaint,
+      }}>/04 · in slack</div>
+      <h2 style={{
+        margin: "18px 0 32px", fontFamily: theme.display, fontWeight: 600,
+        fontSize: 52, lineHeight: 1.05, letterSpacing: "-0.025em", maxWidth: 820,
+      }}>
+        DM the agent.{" "}
+        <span style={{ fontStyle: "italic", fontWeight: 500 }}>Or just @mention it in any channel.</span>
+      </h2>
+
+      <div style={{
+        background: theme.bgSoft, border: `1px solid ${theme.hair}`,
+        padding: "20px 24px", maxWidth: 720,
+      }}>
+        <div style={{
+          fontFamily: theme.mono, fontSize: 10, color: theme.inkFaint,
+          letterSpacing: "0.18em", textTransform: "uppercase",
+          marginBottom: 16, display: "flex", justifyContent: "space-between",
+        }}>
+          <span># sales-ops</span><span>thursday · 10:14a</span>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {lines.map((l, i) => (
+            <div key={i} style={{
+              padding: "10px 14px",
+              background: l.whoColor ? "rgba(197,236,79,0.05)" : theme.bg,
+              border: `1px solid ${l.whoColor ? "rgba(197,236,79,0.18)" : theme.hair}`,
+              borderRadius: 4,
+            }}>
+              <div style={{
+                fontFamily: theme.body, fontSize: 13, fontWeight: 600,
+                color: l.whoColor ?? theme.ink, marginBottom: 4,
+              }}>{l.who}</div>
+              <div style={{
+                fontFamily: theme.body, fontSize: 14,
+                color: theme.inkLede, lineHeight: 1.5,
+              }}>{l.text}</div>
+              {l.tag && (
+                <div style={{
+                  marginTop: 8, fontFamily: theme.mono, fontSize: 10,
+                  color: theme.inkFaint, letterSpacing: "0.16em", textTransform: "uppercase",
+                }}>{l.tag}</div>
+              )}
             </div>
           ))}
         </div>
-      </section>
+      </div>
 
-      {/* feature */}
-      <section style={{ padding: "40px 56px 60px" }}>
-        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 22 }}>
-          <div>
-            <div style={{ fontFamily: theme.mono, fontSize: 11, letterSpacing: "0.24em", textTransform: "uppercase", color: theme.inkFaint }}>
-              /02 · trust
-            </div>
-            <div style={{ marginTop: 12, fontFamily: theme.display, fontWeight: 600, fontSize: 44, letterSpacing: "-0.025em", lineHeight: 1.05 }}>
-              Every action is a <span style={{ fontStyle: "italic", fontWeight: 500 }}>small essay.</span>
-            </div>
-          </div>
-          <div style={{ fontFamily: theme.mono, fontSize: 11, color: theme.inkFaint, letterSpacing: "0.16em" }}>
-            remotion · 10s loop · 30fps
-          </div>
-        </div>
-        <GlyphIIDecision/>
-      </section>
-
-      {/* type spec */}
-      <section style={{ padding: "40px 56px 60px", borderTop: `1px solid ${theme.hair}` }}>
-        <div style={{ fontFamily: theme.mono, fontSize: 11, letterSpacing: "0.24em", textTransform: "uppercase", color: theme.inkFaint, marginTop: 30 }}>
-          /03 · type
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 56, marginTop: 30, alignItems: "end" }}>
-          <div>
-            <div style={{ fontFamily: theme.display, fontWeight: 700, fontSize: 220, lineHeight: 0.85, letterSpacing: "-0.04em" }}>
-              Aa
-            </div>
-            <div style={{ fontFamily: theme.mono, fontSize: 11, marginTop: 14, color: theme.inkFaint, letterSpacing: "0.18em", textTransform: "uppercase" }}>
-              Source Serif 4 · 700 · display 220
-            </div>
-          </div>
-          <div>
-            <div style={{ fontFamily: theme.display, fontWeight: 500, fontStyle: "italic", fontSize: 24, lineHeight: 1.45, color: theme.inkLede, letterSpacing: "-0.005em" }}>
-              Source Serif gives the wordmark a confident, two-story &lsquo;a&rsquo; that reads at any size. Italic is reserved for cadence — lede, section names, pull quotes — never for the centrepiece.
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, auto)", gap: 22, marginTop: 28, fontFamily: theme.mono, fontSize: 11, color: theme.inkFaint, letterSpacing: "0.14em" }}>
-              <span>14 / Geist 400</span>
-              <span>18 / Geist 400</span>
-              <span>44 / Source 600</span>
-              <span>220 / Source 700</span>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* rationale */}
-      <section style={{
-        margin: "0 56px 56px",
-        padding: "34px 36px 32px",
-        background: theme.bgSoft, border: `1px solid ${theme.hair}`,
+      <p style={{
+        marginTop: 20, fontFamily: theme.body, fontSize: 14,
+        color: theme.inkDim, maxWidth: 720, lineHeight: 1.55,
       }}>
-        <div style={{ fontFamily: theme.mono, fontSize: 11, letterSpacing: "0.22em", textTransform: "uppercase", color: theme.accent, marginBottom: 16 }}>
-          why this design
-        </div>
-        <div style={{ fontFamily: theme.display, fontWeight: 500, fontSize: 22, fontStyle: "italic", lineHeight: 1.55, maxWidth: 920, letterSpacing: "-0.005em" }}>
-          The letter a is the most legible mark in the Latin alphabet — a clear signature for an agent whose job is to make every step legible. Source Serif 4 700 gives it weight; the lime accent gives it life; the grain inside gives it breath.
-        </div>
-        <div style={{ display: "flex", gap: 28, marginTop: 24, fontFamily: theme.mono, fontSize: 10, color: theme.inkFaint, letterSpacing: "0.18em", textTransform: "uppercase" }}>
-          <span>clearer · heavier · more honest</span>
-          <span>typographic · quiet · cited</span>
-        </div>
-      </section>
-    </div>
+        Install the Aki bot once. After that, every agent you create is mentionable
+        from Slack — <code style={{
+          fontFamily: theme.mono, fontSize: 13, background: theme.bg,
+          color: theme.accent, padding: "1px 6px", borderRadius: 4,
+        }}>@aki-sales</code>,{" "}
+        <code style={{
+          fontFamily: theme.mono, fontSize: 13, background: theme.bg,
+          color: theme.accent, padding: "1px 6px", borderRadius: 4,
+        }}>@aki-recruiting</code>, and so on.
+      </p>
+    </section>
+  );
+}
+
+// ─── final CTA ───────────────────────────────────────────────────────────
+function FinalCTA() {
+  return (
+    <section style={{
+      margin: "80px 56px 24px",
+      padding: "60px 48px",
+      background: theme.bgSoft, border: `1px solid ${theme.hair}`,
+      textAlign: "center",
+    }}>
+      <div style={{
+        fontFamily: theme.mono, fontSize: 11, color: theme.accent,
+        letterSpacing: "0.22em", textTransform: "uppercase", marginBottom: 16,
+      }}>free during beta</div>
+      <h2 style={{
+        margin: 0, fontFamily: theme.display, fontWeight: 600,
+        fontSize: 48, lineHeight: 1.05, letterSpacing: "-0.025em",
+        maxWidth: 720, marginInline: "auto",
+      }}>
+        Spin up your first agent today.
+        <br/>
+        <span style={{ fontStyle: "italic", fontWeight: 500 }}>Three answers and you&rsquo;re working.</span>
+      </h2>
+      <div style={{
+        marginTop: 32, display: "flex", gap: 14, justifyContent: "center", flexWrap: "wrap",
+      }}>
+        <Show when="signed-out">
+          <SignUpButton mode="modal" forceRedirectUrl="/onboarding">
+            <button style={primaryCTA}>Get on the beta</button>
+          </SignUpButton>
+        </Show>
+        <Show when="signed-in">
+          <Link href="/onboarding" style={{ ...primaryCTA, textDecoration: "none" }}>
+            Spin up an agent
+          </Link>
+        </Show>
+        <Link href="/docs" style={{
+          ...primaryCTA,
+          background: "transparent", color: theme.ink,
+          border: `1px solid ${theme.hair}`, textDecoration: "none",
+        }}>Read the docs</Link>
+      </div>
+    </section>
   );
 }
