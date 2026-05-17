@@ -159,17 +159,24 @@ export const auditApi = {
   },
 };
 
-// Approvals (placeholder — endpoint not yet shipped on backend) -----
+// Approvals --------------------------------------------------------
 
 export const approvalsApi = {
   list: async (gt: Fetcher): Promise<Approval[]> => {
     try {
       return await request<Approval[]>(gt, "GET", "/approvals");
     } catch (e) {
-      // Backend ships in a later session. Silently return empty so the
-      // UI renders its empty state.
+      // The list endpoint may briefly 404 during a backend deploy; treat
+      // that as an empty inbox so the UI renders its empty state cleanly
+      // instead of showing a scary error.
       if (e instanceof ApiError && (e.status === 404 || e.status === 405)) return [];
       throw e;
     }
   },
+  approve: (gt: Fetcher, id: string, note?: string) =>
+    request<unknown>(gt, "POST", `/approvals/${encodeURIComponent(id)}/approve`,
+      note ? { note } : undefined),
+  deny: (gt: Fetcher, id: string, note?: string) =>
+    request<unknown>(gt, "POST", `/approvals/${encodeURIComponent(id)}/deny`,
+      note ? { note } : undefined),
 };
