@@ -187,32 +187,34 @@ async def _process_slack_message(
 ) -> None:
     """The real work — runs after the webhook returns 200.
 
-    Builds a synthetic user message that gives the agent enough context
-    to reply via its slack_bot tool. The agent's normal chat path handles
-    everything: audit, rate limits, tool calls (including the Slack post),
-    consent if applicable. No direct Slack API call from this code —
-    the agent owns the reply.
+    v1 reply model (free Pipedream): the agent generates a text response;
+    we capture it from the stream and POST directly to Slack via our
+    slack_client. The agent is NOT instructed to call slack_bot tools
+    itself (the free-Pipedream `slack_bot` connection is keys-based and
+    doesn't expose chat.postMessage as MCP).
+
+    When we move to Pipedream Business + custom OAuth (or write our own
+    Slack OAuth), this whole function can switch back to "agent uses its
+    own MCP tool to reply" and the direct-post path becomes the fallback.
     """
     from app.agent_runtime import ensure_agent_loaded
-    from app.audit import append_audit
     from app.rate_limits import Kind as RLKind, enforce_daily_cap, record_usage
-    from app.pricing import estimate_cost_usd
+    from app.slack_client import SlackError, post_message
     import httpx
+    import json as _json
 
-    settings = get_settings()
-
-    # Strip the leading slug mention from the text (the agent doesn't
-    # need to re-parse it) so the user_text is the actual question.
+    # Strip the leading slug mention from the text so the agent sees the
+    # actual question, not "@aki-sales tell me ...".
     cleaned = _MENTION_PATTERN.sub("", text_in.strip(), count=1).strip() or text_in
 
     composed_user = (
-        f"You received a Slack message in channel `{channel}` from user "
-        f"<@{slack_user}>:\n\n{cleaned}\n\n"
-        f"Reply by posting to that same channel using your slack_bot "
-        f"chat.postMessage tool (channel={channel}). Be brief — Slack "
-        f"is conversational. If the request is tier-2 (sending external "
-        f"messages, signing up for things), gate it via request_approval "
-        f"first."
+        f"You received a Slack DM from user <@{slack_user}> in channel "
+        f"`{channel}`:\n\n{cleaned}\n\n"
+        f"Reply with a brief, conversational message — this is Slack, not "
+        f"email. Don't try to call slack_bot tools yourself; the platform "
+        f"will post your reply for you. If this asks for a tier-2 action "
+        f"(external email, public post, account signup), gate it via "
+        f"request_approval first and tell the user it's pending."
     )
 
     async with session_for_org(org_id) as db:
@@ -221,8 +223,14 @@ async def _process_slack_message(
             await enforce_daily_cap(db, org_id, RLKind.LLM_CENTS)
         except HTTPException:
             log.warning("slack: rate-limit hit for org=%s, skipping reply", org_id)
-            # TODO: post a "you've hit your daily cap" message via Slack
-            # API directly so the user knows we got their message.
+            try:
+                await post_message(
+                    channel,
+                    ":hourglass_flowing_sand: Aki is over today's usage cap. "
+                    "Resets at midnight UTC.",
+                )
+            except SlackError:
+                log.exception("slack: failed to post rate-limit notice")
             return
 
         container = await ensure_agent_loaded(db, org_id, agent.id)
@@ -237,8 +245,6 @@ async def _process_slack_message(
         )
         await db.commit()
 
-        # System prompt comes from the agent's record; we prepend like the
-        # web chat path does.
         body = {
             "model": "hermes-agent",
             "stream": True,
@@ -247,16 +253,16 @@ async def _process_slack_message(
                 {"role": "user", "content": composed_user},
             ],
         }
-
         headers = {
             "Authorization": f"Bearer {container.supervisor_api_key}",
             "Content-Type": "application/json",
             "X-Aki-Agent-Id": str(agent.id),
         }
 
-        # Drain the SSE response — don't bother accumulating content,
-        # the agent posts to Slack via its own MCP tool. We just need
-        # the chat loop to RUN.
+        # Accumulate the assistant's visible content from the SSE stream
+        # so we can post it back to Slack. tool-call chunks are skipped.
+        assistant_parts: list[str] = []
+        tail = ""
         try:
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(600.0, connect=10.0)
@@ -267,14 +273,67 @@ async def _process_slack_message(
                     json=body,
                     headers=headers,
                 ) as upstream:
-                    async for _ in upstream.aiter_bytes():
-                        pass
+                    async for raw in upstream.aiter_bytes():
+                        try:
+                            tail += raw.decode("utf-8", errors="replace")
+                        except Exception:
+                            continue
+                        # Parse SSE blocks separated by "\n\n".
+                        while True:
+                            sep = tail.find("\n\n")
+                            if sep == -1:
+                                break
+                            block = tail[:sep]
+                            tail = tail[sep + 2:]
+                            for line in block.split("\n"):
+                                if not line.startswith("data:"):
+                                    continue
+                                data_str = line[5:].lstrip()
+                                if data_str == "[DONE]":
+                                    continue
+                                try:
+                                    obj = _json.loads(data_str)
+                                except Exception:
+                                    continue
+                                choices = (obj or {}).get("choices") or []
+                                if choices:
+                                    piece = (
+                                        (choices[0] or {}).get("delta") or {}
+                                    ).get("content")
+                                    if isinstance(piece, str) and piece:
+                                        assistant_parts.append(piece)
             await record_usage(db, org_id, RLKind.ACTIONS, 1)
             await db.commit()
         except Exception:
             log.exception(
                 "slack: chat invocation failed org=%s agent=%s",
                 org_id, agent.id,
+            )
+            try:
+                await post_message(
+                    channel,
+                    ":warning: Aki hit an error processing that. The trail "
+                    "is in your audit log.",
+                )
+            except SlackError:
+                log.exception("slack: failed to post error notice")
+            return
+
+        reply_text = "".join(assistant_parts).strip()
+        if not reply_text:
+            # Agent ran tools or returned no visible text; tell the user
+            # something happened so they're not staring at an empty thread.
+            reply_text = (
+                ":thinking_face: Aki processed that but didn't have a "
+                "text reply. Check the audit log if you wanted to see tool "
+                "activity."
+            )
+        try:
+            await post_message(channel, reply_text)
+        except SlackError as e:
+            log.exception(
+                "slack: chat.postMessage failed channel=%s detail=%s",
+                channel, e.response,
             )
 
 
