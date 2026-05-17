@@ -13,7 +13,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from app.agent_runtime import hibernation_loop, reap_orphans, shutdown_all
 from app.config import get_settings
 from app.limits import limiter
-from app.routes import chat, connections, health, me, webhooks
+from app.routes import audit, chat, connections, health, me, webhooks
 
 settings = get_settings()
 log = logging.getLogger("aki")
@@ -92,3 +92,4 @@ app.include_router(me.router)
 app.include_router(webhooks.router)
 app.include_router(connections.router)
 app.include_router(chat.router)
+app.include_router(audit.router)

@@ -29,8 +29,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agent_runtime import HermesProcess, ensure_running
 from app.audit import append_audit
 from app.auth import Principal
+from app.config import get_settings
 from app.db import session_for_org
 from app.middleware import get_principal, get_session
+from app.pricing import estimate_cost_usd
 
 
 log = logging.getLogger(__name__)
@@ -97,6 +99,13 @@ async def _flush_audit(
                 log.exception("audit chat.tool_call failed for evt=%s", evt)
 
         try:
+            usage = final_usage or {}
+            model_name = get_settings().hermes_model_name
+            cost_usd = estimate_cost_usd(
+                model_name,
+                int(usage.get("prompt_tokens") or 0),
+                int(usage.get("completion_tokens") or 0),
+            ) if usage else 0.0
             await append_audit(
                 db,
                 org_id,
@@ -105,8 +114,10 @@ async def _flush_audit(
                 target=container_id,
                 payload={
                     "duration_ms": duration_ms,
-                    "usage": final_usage or {},
+                    "usage": usage,
                     "tool_calls": len(tool_events),
+                    "model": model_name,
+                    "cost_usd": cost_usd,
                 },
             )
         except Exception:

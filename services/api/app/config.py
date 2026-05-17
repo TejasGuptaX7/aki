@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     clerk_jwt_issuer: str | None = None
     clerk_jwks_url: str | None = None
     clerk_webhook_secret: str | None = None
+    clerk_secret_key: str | None = None       # for Backend API calls (metadata update)
 
     # Agent
     hermes_gateway_url: str = "http://localhost:8080"
