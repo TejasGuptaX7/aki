@@ -131,10 +131,10 @@ async def clerk_webhook(request: Request) -> None:
         )
         await db.commit()
 
-    # No external-provider entity provisioning at signup. Pipedream Connect
-    # creates entities lazily on first /connections/pipedream/connect-token,
-    # using the org_id (or org_id:agent_id for per-agent) as the
-    # external_user_id. No upfront API call needed.
+    # No external-provider entity provisioning at signup. Native OAuth
+    # (app/oauth/) and Arcade both create their identity lazily on the
+    # first /connections/oauth/start (or /connections/arcade/start), using
+    # our org_id (or org_id:agent_id for per-agent) as the user id.
 
     # Push the new org_id into Clerk's user.public_metadata so the JWT
     # template's {{user.public_metadata.aki_org_id}} resolves on next sign-in.

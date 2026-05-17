@@ -12,11 +12,11 @@ Two-phase request lifecycle (Slack contract):
           (parse mention → resolve agent → run chat → agent replies via
           its own slack_bot MCP tool).
 
-Reply path is elegant: we don't post to Slack from this handler. Instead,
-the agent's chat is invoked with a synthetic system context describing
-the Slack message, and the agent uses its OWN `slack_bot` MCP tool
-(from Pipedream Connect) to post the response. That way the agent's
-audit trail and rate limits cover Slack the same way they cover web chat.
+Reply path: the agent's chat is invoked with a synthetic system context
+describing the Slack message; the agent's response text is captured from
+the stream and posted back via slack_client.post_message. The agent has
+access to `slack_post_message` via the native MCP server (app/oauth/slack.py)
+for cases where it wants to post elsewhere mid-task.
 
 Org resolution: the Slack `team_id` in the event payload maps to one of
 our Connection rows (provider='slack_bot', config has the team_id
@@ -111,12 +111,13 @@ def _parse_agent_slug(text_in: str) -> str | None:
 
 
 async def _resolve_org_by_slack_team(team_id: str) -> UUID | None:
-    """Find which org owns this Slack workspace. The Pipedream Slack-bot
-    connection records the team_id in config when OAuth completes."""
+    """Find which org owns this Slack workspace.
+
+    Native Slack OAuth (app/oauth/slack.py) stores team_id directly in
+    config; the legacy slack_bot / Arcade-mediated paths nest it under
+    `metadata.team_id` or `slack_team_id` — check all three."""
     async with SessionLocal() as db:
         await db.execute(text("SET LOCAL row_security = off"))
-        # Match either provider='slack_bot' OR provider='slack' (legacy),
-        # with team_id in the config jsonb.
         rows = (
             await db.execute(
                 select(Connection).where(
@@ -127,13 +128,11 @@ async def _resolve_org_by_slack_team(team_id: str) -> UUID | None:
         ).scalars().all()
         for r in rows:
             cfg = r.config or {}
-            # Pipedream's account responses include team_id at various
-            # key paths depending on the toolkit version — check the
-            # likely names.
             if (
                 cfg.get("team_id") == team_id
                 or cfg.get("slack_team_id") == team_id
                 or (cfg.get("metadata") or {}).get("team_id") == team_id
+                or (cfg.get("team") or {}).get("id") == team_id
             ):
                 return r.organization_id
     return None
@@ -187,16 +186,11 @@ async def _process_slack_message(
 ) -> None:
     """The real work — runs after the webhook returns 200.
 
-    v1 reply model (free Pipedream): the agent generates a text response;
-    we capture it from the stream and POST directly to Slack via our
-    slack_client. The agent is NOT instructed to call slack_bot tools
-    itself (the free-Pipedream `slack_bot` connection is keys-based and
-    doesn't expose chat.postMessage as MCP).
-
-    When we move to Pipedream Business + custom OAuth (or write our own
-    Slack OAuth), this whole function can switch back to "agent uses its
-    own MCP tool to reply" and the direct-post path becomes the fallback.
-    """
+    Reply model: the agent generates a text response; we capture it from
+    the stream and POST directly to Slack via slack_client. The agent's
+    native `slack_post_message` tool exists (see app/oauth/slack.py) but
+    isn't on the reply path for this flow — keeps the agent from
+    accidentally posting twice."""
     from app.agent_runtime import ensure_agent_loaded
     from app.rate_limits import Kind as RLKind, enforce_daily_cap, record_usage
     from app.slack_client import SlackError, post_message
@@ -400,8 +394,8 @@ async def slack_webhook(request: Request) -> Response:
     org_id = await _resolve_org_by_slack_team(team_id)
     if org_id is None:
         log.warning(
-            "slack event from unknown team_id=%s (no active slack_bot "
-            "connection). Did the workspace install Aki via Pipedream?",
+            "slack event from unknown team_id=%s (no active slack "
+            "connection). Did the workspace install Aki via /connect?",
             team_id,
         )
         return Response(status_code=200)

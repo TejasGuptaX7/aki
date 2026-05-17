@@ -12,18 +12,20 @@ Per-agent scoping rules (see docs/architecture.md §6):
 A given agent's MCP server list is the union of (org-wide ∪ its own).
 
 Source kinds (`connection.config.source`):
-  - "pipedream"       → Pipedream Connect; one MCP server per external_user
-                        (org-wide and per-agent get separate entries)
-  - "arcade"          → Arcade.dev; one MCP server, per-user via header
-  - "browser_harness" → self-hosted services/browser-harness; see PROTOCOL.md
-  - "browser_use"     → Browser Use Cloud (kept as fallback)
-  - "custom"          → BYO MCP URL, passed through verbatim
+  - "{provider}_native"  → native OAuth (Gmail, Slack, Notion, Linear,
+                            HubSpot). Tools served from our own MCP server
+                            at /agent_internal/native_mcp.
+  - "arcade"             → Arcade.dev's managed MCP gateway; per-user via
+                            the Arcade-User-ID header.
+  - "browser_harness"    → self-hosted services/browser-harness; see
+                            PROTOCOL.md
+  - "browser_use"        → Browser Use Cloud (fallback)
+  - "custom"             → BYO MCP URL, passed through verbatim
 
-Legacy rows with `source="composio"` are silently skipped (no MCP server
-emitted). The Composio client + auth_config plumbing was deleted in
-phase 3d; existing rows live in the DB until the user re-OAuths via
-Pipedream and either we expose a /connections DELETE or they ignore the
-orphan.
+Legacy rows with source="pipedream" or source="composio" are skipped and
+marked stale; users re-connect via native (top-5) or Arcade (rest). The
+DB doesn't get touched here — see app/connectors/__init__.py for the
+deprecation marker run by `make` recipes.
 """
 from __future__ import annotations
 
@@ -37,21 +39,28 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.arcade_client import get_arcade_client
 from app.config import get_settings
 from app.models import Connection
-from app.pipedream_client import get_pipedream_client
 
 
 log = logging.getLogger(__name__)
 
 
+# Identifiers we hand to Arcade as `Arcade-User-ID`. Org-wide connections
+# live under the org id; per-agent under `<org>:<agent>`. Same shape that
+# /oauth/arcade/verifier expects in `_resolve_user`.
 def _arcade_user_id(org_id: UUID, agent_id: UUID | None) -> str:
-    """Per-user identifier we hand to Arcade. Org-wide connections live
-    under the org id; per-agent under `<org>:<agent>`."""
     return str(org_id) if agent_id is None else f"{org_id}:{agent_id}"
 
 
-def _pipedream_external_user_id(org_id: UUID, agent_id: UUID | None) -> str:
-    """Per-user identifier we hand to Pipedream Connect. Same shape as Arcade."""
-    return str(org_id) if agent_id is None else f"{org_id}:{agent_id}"
+# Sources we recognize as native (= served by /agent_internal/native_mcp).
+NATIVE_SOURCES = frozenset(
+    {
+        "gmail_native",
+        "slack_native",
+        "notion_native",
+        "linear_native",
+        "hubspot_native",
+    }
+)
 
 
 async def materialize_mcp_servers(
@@ -67,9 +76,9 @@ async def materialize_mcp_servers(
     org-level introspection). Per-agent calls return the union of org-wide
     + agent-scoped.
 
-    `agent_service_token`, when provided, adds the request_approval MCP
-    server pointing at our control plane's /agent_internal/mcp endpoint.
-    Caller is responsible for minting / persisting the token (see
+    `agent_service_token`, when provided, adds the internal MCP servers
+    (request_approval + native tools) pointing at our control plane. Caller
+    is responsible for minting / persisting the token (see
     agent_runtime._seed_agent_workspace).
 
     Any service whose env config is missing is silently skipped — local dev
@@ -77,24 +86,6 @@ async def materialize_mcp_servers(
     """
     settings = get_settings()
     servers: list[dict[str, Any]] = []
-
-    # ── request_approval (internal MCP) ────────────────────────────────────
-    # Always present when we have a token + an agent context. This is the
-    # consent gate: the agent calls this before any tier-2 action and waits
-    # for the user's yes/no via /approvals.
-    if agent_id is not None and agent_service_token:
-        servers.append(
-            {
-                "name": "approvals",
-                "transport": "http",
-                "url": f"{settings.api_internal_url.rstrip('/')}/agent_internal/mcp",
-                "headers": {
-                    "Authorization": f"Bearer {agent_service_token}",
-                    "X-Aki-Org-Id": str(org_id),
-                    "X-Aki-Agent-Id": str(agent_id),
-                },
-            }
-        )
 
     visibility = (
         (Connection.agent_id.is_(None))
@@ -113,49 +104,53 @@ async def materialize_mcp_servers(
     ).scalars().all()
 
     sources = {(r.config or {}).get("source") for r in rows}
+
+    # ── Internal MCP: request_approval ─────────────────────────────────────
+    # Always present when we have a token + an agent context. This is the
+    # consent gate: the agent calls this before any tier-2 action and waits
+    # for the user's yes/no via /approvals.
+    if agent_id is not None and agent_service_token:
+        common_headers = {
+            "Authorization": f"Bearer {agent_service_token}",
+            "X-Aki-Org-Id": str(org_id),
+            "X-Aki-Agent-Id": str(agent_id),
+        }
+        servers.append(
+            {
+                "name": "approvals",
+                "transport": "http",
+                "url": f"{settings.api_internal_url.rstrip('/')}/agent_internal/mcp",
+                "headers": common_headers,
+            }
+        )
+
+        # ── Internal MCP: native-provider tools ────────────────────────
+        # Only emit if the agent actually has at least one native
+        # connection in scope. Hermes will still happily list tools from
+        # an MCP server that returns zero, but skipping saves a startup
+        # round-trip per orphan agent.
+        if any((r.config or {}).get("source") in NATIVE_SOURCES for r in rows):
+            servers.append(
+                {
+                    "name": "native",
+                    "transport": "http",
+                    "url": f"{settings.api_internal_url.rstrip('/')}/agent_internal/native_mcp",
+                    "headers": common_headers,
+                }
+            )
+
     org_wide_rows = [r for r in rows if r.agent_id is None]
     agent_rows = [r for r in rows if agent_id is not None and r.agent_id == agent_id]
 
-    # ── Pipedream Connect ──────────────────────────────────────────────────
-    # One MCP endpoint per (project, external_user). We add one for the
-    # org-wide entity if there's any org-wide Pipedream connection, and a
-    # separate one for the per-agent entity if there's any agent-scoped one.
-    # Hermes sees both as independent MCP servers and surfaces tools from
-    # the union — exactly what we want for the (org-wide ∪ per-agent) rule.
-    if "pipedream" in sources and settings.pipedream_client_id:
-        try:
-            pd = get_pipedream_client()
-            mcp_headers = await pd.mcp_headers()
-            if any((r.config or {}).get("source") == "pipedream" for r in org_wide_rows):
-                eu = _pipedream_external_user_id(org_id, None)
-                servers.append(
-                    {
-                        "name": "pipedream-org",
-                        "transport": "http",
-                        "url": pd.mcp_url(eu),
-                        "headers": mcp_headers,
-                    }
-                )
-            if agent_id is not None and any(
-                (r.config or {}).get("source") == "pipedream" for r in agent_rows
-            ):
-                eu = _pipedream_external_user_id(org_id, agent_id)
-                servers.append(
-                    {
-                        "name": "pipedream-agent",
-                        "transport": "http",
-                        "url": pd.mcp_url(eu),
-                        "headers": mcp_headers,
-                    }
-                )
-        except Exception:
-            log.exception("pipedream MCP materialize failed; skipping")
-
     # ── Arcade.dev ─────────────────────────────────────────────────────────
-    # Single MCP endpoint; per-user scoping via X-Arcade-User-Id header.
+    # Single MCP gateway URL; per-user scoping via Arcade-User-ID header.
     # We add separate org-wide vs per-agent entries because they need
     # different headers — Hermes treats them as independent servers.
-    if "arcade" in sources and settings.arcade_api_key:
+    if (
+        "arcade" in sources
+        and settings.arcade_api_key
+        and settings.arcade_mcp_gateway_slug
+    ):
         try:
             ac = get_arcade_client()
             if any((r.config or {}).get("source") == "arcade" for r in org_wide_rows):
@@ -231,5 +226,10 @@ async def materialize_mcp_servers(
             if cfg.get("auth_header"):
                 entry["headers"] = {"Authorization": cfg["auth_header"]}
             servers.append(entry)
+
+    # Legacy "pipedream" / "composio" sources: ignored silently. Users
+    # whose rows still carry those will see the connector disappear from
+    # the agent's tool surface and must re-connect via the native or
+    # arcade flows. Surfacing that nudge is the frontend's job.
 
     return servers

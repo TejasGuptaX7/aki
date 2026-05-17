@@ -22,6 +22,8 @@ from app.routes import (
     connections,
     health,
     me,
+    native_mcp,
+    oauth_verifier,
     slack,
     webhooks,
 )
@@ -107,4 +109,6 @@ app.include_router(chat.router)
 app.include_router(audit.router)
 app.include_router(approvals.router)
 app.include_router(agent_internal.router)
+app.include_router(native_mcp.router)
+app.include_router(oauth_verifier.router)
 app.include_router(slack.router)
