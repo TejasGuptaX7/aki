@@ -15,6 +15,7 @@ class Settings(BaseSettings):
 
     app_env: Literal["dev", "staging", "prod"] = "dev"
     api_base_url: str = "http://localhost:8000"
+    web_base_url: str = "http://localhost:3000"   # for OAuth callback redirects
 
     # Safety: the X-Dev-Org-Id auth bypass requires BOTH app_env=dev AND this
     # flag set to true. Two checks so a single env misconfiguration in prod

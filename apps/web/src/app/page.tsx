@@ -1,6 +1,8 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
+import { Show, SignInButton, SignUpButton, UserButton } from "@clerk/nextjs";
 
 /**
  * Aki landing — direction 03 · II — Glyph (refined).
@@ -326,9 +328,17 @@ export default function Home() {
           <span style={{ fontFamily: theme.body, fontWeight: 600, fontSize: 16, letterSpacing: "0.04em" }}>aki</span>
           <span style={{ fontFamily: theme.mono, fontSize: 11, color: theme.inkFaint, letterSpacing: "0.12em" }}>v 0.7</span>
         </div>
-        <div style={{ display: "flex", gap: 32, fontFamily: theme.body, fontSize: 14, fontWeight: 500, color: theme.inkDim }}>
+        <div style={{ display: "flex", gap: 32, alignItems: "center", fontFamily: theme.body, fontSize: 14, fontWeight: 500, color: theme.inkDim }}>
           <span>Product</span><span>Fieldwork</span><span>Pricing</span><span>Company</span>
-          <span style={{ color: theme.accent }}>Request access ⟶</span>
+          <Show when="signed-out">
+            <SignInButton mode="modal">
+              <span style={{ color: theme.accent, cursor: "pointer" }}>Request access ⟶</span>
+            </SignInButton>
+          </Show>
+          <Show when="signed-in">
+            <Link href="/chat" style={{ color: theme.accent, textDecoration: "none" }}>Open app ⟶</Link>
+            <UserButton/>
+          </Show>
         </div>
       </nav>
 
@@ -356,11 +366,22 @@ export default function Home() {
               Aki connects to your team&rsquo;s systems, takes a brief in your voice, and works the backlog through the night. Every action cites its source. You decide what stands.
             </div>
             <div style={{ marginTop: 32, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 12 }}>
-              <button style={{
-                background: theme.accent, color: theme.bg, border: "none",
-                fontFamily: theme.body, fontWeight: 600, fontSize: 15, letterSpacing: "0.01em",
-                padding: "14px 24px", borderRadius: 999, cursor: "pointer",
-              }}>Request access</button>
+              <Show when="signed-out">
+                <SignUpButton mode="modal">
+                  <button style={{
+                    background: theme.accent, color: theme.bg, border: "none",
+                    fontFamily: theme.body, fontWeight: 600, fontSize: 15, letterSpacing: "0.01em",
+                    padding: "14px 24px", borderRadius: 999, cursor: "pointer",
+                  }}>Request access</button>
+                </SignUpButton>
+              </Show>
+              <Show when="signed-in">
+                <Link href="/chat" style={{
+                  background: theme.accent, color: theme.bg, border: "none",
+                  fontFamily: theme.body, fontWeight: 600, fontSize: 15, letterSpacing: "0.01em",
+                  padding: "14px 24px", borderRadius: 999, cursor: "pointer", textDecoration: "none",
+                }}>Open app ⟶</Link>
+              </Show>
               <span style={{ fontFamily: theme.mono, fontSize: 11, color: theme.inkFaint, letterSpacing: "0.16em", textTransform: "uppercase" }}>
                 142 teams · no waitlist email
               </span>

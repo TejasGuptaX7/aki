@@ -161,5 +161,6 @@ async def oauth_callback(
         )
         await db.commit()
 
-    front_end = get_settings().api_base_url.replace(":8000", ":3000")
-    return RedirectResponse(url=f"{front_end}/chat", status_code=302)
+    return RedirectResponse(
+        url=f"{get_settings().web_base_url.rstrip('/')}/chat", status_code=302,
+    )
