@@ -89,6 +89,20 @@ async function request<T>(
 
 // Agents -------------------------------------------------------------
 
+export type AgentTemplate = {
+  key: string;
+  name: string;
+  blurb: string;
+  suggested_tools: string[];
+};
+
+export type ChatMessage = {
+  id: number;
+  role: "user" | "assistant" | "system";
+  content: string;
+  created_at: string;
+};
+
 export const agentsApi = {
   list: (gt: Fetcher) => request<Agent[]>(gt, "GET", "/agents"),
   get: (gt: Fetcher, id: string) => request<AgentDetail>(gt, "GET", `/agents/${id}`),
@@ -97,6 +111,16 @@ export const agentsApi = {
   update: (gt: Fetcher, id: string, body: { name?: string; system_prompt?: string }) =>
     request<AgentDetail>(gt, "PATCH", `/agents/${id}`, body),
   remove: (gt: Fetcher, id: string) => request<void>(gt, "DELETE", `/agents/${id}`),
+  listTemplates: (gt: Fetcher) => request<AgentTemplate[]>(gt, "GET", "/agents/templates"),
+  createFromTemplate: (gt: Fetcher, key: string, body?: { name?: string }) =>
+    request<AgentDetail>(gt, "POST", `/agents/from-template/${encodeURIComponent(key)}`, body ?? {}),
+  listMessages: (gt: Fetcher, id: string, opts?: { limit?: number; before_id?: number }) => {
+    const params = new URLSearchParams();
+    if (opts?.limit) params.set("limit", String(opts.limit));
+    if (opts?.before_id) params.set("before_id", String(opts.before_id));
+    const qs = params.toString();
+    return request<ChatMessage[]>(gt, "GET", `/agents/${id}/messages${qs ? `?${qs}` : ""}`);
+  },
 };
 
 // Connections --------------------------------------------------------

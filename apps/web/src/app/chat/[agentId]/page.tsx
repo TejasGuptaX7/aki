@@ -7,7 +7,7 @@ import { useAuth } from "@clerk/nextjs";
 import { theme, API_URL } from "@/lib/theme";
 import { AppShell, ErrorBanner } from "@/components/AppShell";
 import { useAgents, rememberAgent } from "@/lib/agents";
-import { agentsApi, AgentDetail } from "@/lib/api";
+import { agentsApi, AgentDetail, ApiError } from "@/lib/api";
 
 type Msg = { role: "user" | "assistant"; content: string; tools?: ToolEvent[] };
 type ToolEvent = { id: string; tool: string; status: string; label?: string };
@@ -25,6 +25,7 @@ export default function AgentChatPage({ params }: { params: Promise<{ agentId: s
   // resets the chat. We store in a ref-of-map to avoid losing buffers
   // mid-stream if the user re-renders for other reasons.
   const [history, setHistory] = React.useState<Msg[]>([]);
+  const [historyLoading, setHistoryLoading] = React.useState(true);
   const [input, setInput] = React.useState("");
   const [streaming, setStreaming] = React.useState("");
   const [tools, setTools] = React.useState<ToolEvent[]>([]);
@@ -50,19 +51,65 @@ export default function AgentChatPage({ params }: { params: Promise<{ agentId: s
     rememberAgent(agentId);
   }, [agentsStatus, agents, agentId, router]);
 
-  // Reset thread state when switching agents
+  // Reset thread state when switching agents, then hydrate detail +
+  // persisted message history in parallel. Backend writes every chat turn
+  // to chat_messages, so refresh is safe — we re-render whatever the
+  // server has on file.
   React.useEffect(() => {
+    let cancelled = false;
     setHistory([]); setStreaming(""); setTools([]); setErr(null);
     setDetail(null); setDetailErr(null);
+    setHistoryLoading(true);
+
+    const tok = () => getToken({ template: "aki" });
+
     (async () => {
       try {
-        const d = await agentsApi.get(() => getToken({ template: "aki" }), agentId);
-        setDetail(d);
+        const d = await agentsApi.get(tok, agentId);
+        if (!cancelled) setDetail(d);
       } catch (e) {
+        if (cancelled) return;
+        // 404 → the agent doesn't exist (or was archived under us).
+        // Bounce to /agents so the user can pick another.
+        if (e instanceof ApiError && e.status === 404) {
+          router.replace("/agents");
+          return;
+        }
         setDetailErr(e instanceof Error ? e.message : String(e));
       }
     })();
-  }, [agentId, getToken]);
+
+    (async () => {
+      try {
+        const rows = await agentsApi.listMessages(tok, agentId, { limit: 200 });
+        if (cancelled) return;
+        // Backend returns newest-first; reverse to chronological for
+        // top-down rendering. Skip role:"system" — those are for the
+        // agent, not the human.
+        const chronological: Msg[] = rows
+          .filter((m) => m.role !== "system")
+          .reverse()
+          .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
+        setHistory(chronological);
+      } catch (e) {
+        if (cancelled) return;
+        if (e instanceof ApiError && e.status === 404) {
+          // Treat as no-history rather than a hard error so we still
+          // render an empty chat surface (and the detail-fetch path above
+          // will own the agent-not-found redirect).
+          setHistory([]);
+        } else {
+          // Don't fail the page on a history-fetch error — surface to
+          // the banner but let the user still send fresh messages.
+          setErr(e instanceof Error ? e.message : String(e));
+        }
+      } finally {
+        if (!cancelled) setHistoryLoading(false);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [agentId, getToken, router]);
 
   React.useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -202,7 +249,14 @@ export default function AgentChatPage({ params }: { params: Promise<{ agentId: s
 
         <div style={{ flex: 1, overflowY: "auto", padding: "40px 0" }}>
           <div style={{ maxWidth: 760, margin: "0 auto", padding: "0 32px" }}>
-            {history.length === 0 && stage === "idle" && (
+            {historyLoading && history.length === 0 && (
+              <div style={{
+                paddingTop: 80, textAlign: "center",
+                fontFamily: theme.mono, fontSize: 11, color: theme.inkFaint,
+                letterSpacing: "0.22em", textTransform: "uppercase",
+              }}>loading history…</div>
+            )}
+            {!historyLoading && history.length === 0 && stage === "idle" && (
               <EmptyChat agentName={detail?.name ?? "your agent"} onPick={(t) => setInput(t)}/>
             )}
             {history.map((m, i) => <MessageBlock key={i} msg={m}/>)}
