@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@clerk/nextjs";
 import { theme, API_URL } from "@/lib/theme";
 import { AppShell, ErrorBanner } from "@/components/AppShell";
+import { PlanScroll } from "@/components/PlanScroll";
 import { useAgents, rememberAgent } from "@/lib/agents";
 import { agentsApi, AgentDetail, ApiError } from "@/lib/api";
 
@@ -249,6 +250,7 @@ export default function AgentChatPage({ params }: { params: Promise<{ agentId: s
 
         <div style={{ flex: 1, overflowY: "auto", padding: "40px 0" }}>
           <div style={{ maxWidth: 760, margin: "0 auto", padding: "0 32px" }}>
+            <PlanScroll agentId={agentId}/>
             {historyLoading && history.length === 0 && (
               <div style={{
                 paddingTop: 80, textAlign: "center",
