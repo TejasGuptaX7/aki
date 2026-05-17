@@ -44,10 +44,11 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Header, HTTPException, Request, status
 from sqlalchemy import select
 
+from app import agent_runs as runs_mod
 from app import agent_tokens
 from app.audit import append_audit
 from app.db import session_for_org
-from app.models import Agent, Approval
+from app.models import Agent, Approval, Notification
 
 
 log = logging.getLogger(__name__)
@@ -214,6 +215,75 @@ async def _create_and_wait(
 
 _TOOL_CATALOGUE = [
     {
+        "name": "update_plan",
+        "description": (
+            "Declare or revise your plan for the current run. Pass the FULL "
+            "ordered list of steps you intend to take. You may call this "
+            "more than once; the latest call wins. Each step is an object "
+            "{text: str, status?: 'pending'|'in_progress'|'done'|'skipped'}. "
+            "Use this at the start of any long task so the user can see "
+            "what you're going to do, and again whenever the plan changes. "
+            "Resolves the current run by (org, agent) — no run_id needed. "
+            "Returns {run_id, step_count} or {error}."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "required": ["steps"],
+            "properties": {
+                "steps": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["text"],
+                        "properties": {
+                            "text": {"type": "string"},
+                            "status": {
+                                "type": "string",
+                                "enum": [
+                                    "pending", "in_progress", "done", "skipped",
+                                ],
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    },
+    {
+        "name": "notify_user",
+        "description": (
+            "Emit an ambient notification the user will see in their inbox. "
+            "Use this to surface a completed long task ('Done: weekly "
+            "report ready'), a wall you hit ('Stuck: need the Acme contract "
+            "PDF'), or a question that doesn't block a tool call. For "
+            "approval-required actions, use `request_approval` instead — "
+            "this tool does not pause execution. Returns "
+            "{notification_id} or {error}."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "required": ["title"],
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "Short headline. Max 200 chars.",
+                },
+                "body": {
+                    "type": "string",
+                    "description": "Optional longer body. Markdown OK.",
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": ["question", "done", "error"],
+                    "description": (
+                        "Default 'done'. 'question' surfaces with a "
+                        "reply CTA; 'error' renders with a warning icon."
+                    ),
+                },
+            },
+        },
+    },
+    {
         "name": "request_approval",
         "description": (
             "Ask the human to approve a tier-2 action (external email, "
@@ -264,6 +334,81 @@ _TOOL_CATALOGUE = [
 ]
 
 
+async def _handle_update_plan(
+    org_id: UUID, agent_id: UUID, args: dict
+) -> dict:
+    """Resolve the agent's current run and replace its plan. The agent
+    never sees a run_id — there is at most one active run per (org, agent)
+    that the agent should care about."""
+    steps = args.get("steps")
+    if not isinstance(steps, list):
+        return {"code": "bad_args", "detail": "steps must be an array"}
+
+    async with session_for_org(org_id) as db:
+        run = await runs_mod.get_current_run(db, org_id, agent_id)
+        if run is None:
+            return {
+                "code": "no_active_run",
+                "detail": (
+                    "no currently running agent_run for this agent; "
+                    "the chat completion must be invoked via POST "
+                    "/agents/{id}/runs or a schedule to open one"
+                ),
+            }
+        updated = await runs_mod.update_plan(db, org_id, run.id, steps)
+        if updated is None:
+            return {"code": "not_found", "detail": "run vanished mid-update"}
+        await append_audit(
+            db, org_id,
+            actor=f"agent:{agent_id}",
+            action="run.update_plan",
+            target=str(run.id),
+            payload={"step_count": len(steps)},
+            agent_id=agent_id,
+        )
+        await db.commit()
+        return {"run_id": str(run.id), "step_count": len(steps)}
+
+
+async def _handle_notify_user(
+    org_id: UUID, agent_id: UUID, args: dict
+) -> dict:
+    title = (args.get("title") or "").strip()
+    if not title:
+        return {"code": "bad_args", "detail": "title is required"}
+    if len(title) > 200:
+        title = title[:200]
+    body = (args.get("body") or "")
+    if len(body) > 8_000:
+        body = body[:8_000]
+    kind = (args.get("kind") or "done").strip()
+    if kind not in ("question", "done", "error"):
+        kind = "done"
+
+    notif_id = uuid4()
+    async with session_for_org(org_id) as db:
+        n = Notification(
+            id=notif_id,
+            organization_id=org_id,
+            agent_id=agent_id,
+            kind=kind,
+            title=title,
+            body=body,
+            payload={},
+        )
+        db.add(n)
+        await append_audit(
+            db, org_id,
+            actor=f"agent:{agent_id}",
+            action="notification.create",
+            target=str(notif_id),
+            payload={"kind": kind, "title_len": len(title)},
+            agent_id=agent_id,
+        )
+        await db.commit()
+    return {"notification_id": str(notif_id), "kind": kind}
+
+
 async def _handle_tool_call(
     org_id: UUID,
     agent_id: UUID,
@@ -272,6 +417,33 @@ async def _handle_tool_call(
 ) -> dict:
     name = (params or {}).get("name") or ""
     args = (params or {}).get("arguments") or {}
+
+    if name == "update_plan":
+        try:
+            out = await _handle_update_plan(org_id, agent_id, args)
+        except Exception as e:
+            log.exception("update_plan failed org=%s agent=%s", org_id, agent_id)
+            return _rpc_ok(rid, _tool_result(
+                {"code": "internal_error", "detail": str(e)[:200]},
+                is_error=True,
+            ))
+        return _rpc_ok(rid, _tool_result(
+            out, is_error=bool(out.get("code")),
+        ))
+
+    if name == "notify_user":
+        try:
+            out = await _handle_notify_user(org_id, agent_id, args)
+        except Exception as e:
+            log.exception("notify_user failed org=%s agent=%s", org_id, agent_id)
+            return _rpc_ok(rid, _tool_result(
+                {"code": "internal_error", "detail": str(e)[:200]},
+                is_error=True,
+            ))
+        return _rpc_ok(rid, _tool_result(
+            out, is_error=bool(out.get("code")),
+        ))
+
     if name != "request_approval":
         return _rpc_ok(rid, _tool_result(
             {"code": "unknown_tool", "detail": f"no such tool: {name}"},

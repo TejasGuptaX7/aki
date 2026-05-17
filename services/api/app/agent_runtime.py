@@ -471,10 +471,15 @@ async def hibernate_idle(idle_minutes: int | None = None) -> int:
     settings = get_settings()
     limit_s = (idle_minutes or settings.hermes_idle_minutes) * 60
     now = time.time()
+    # Long-running-agent guard: skip orgs that have at least one agent_run
+    # in status='running'. Without this, a scheduled report that takes 20m
+    # to produce would have its container killed at the 15m idle mark.
+    from app.scheduler import orgs_with_running_runs  # local: avoid import cycle
+    busy_orgs = await orgs_with_running_runs()
     to_stop = [
         org_id
         for org_id, proc in _REGISTRY.items()
-        if now - proc.last_touched > limit_s
+        if now - proc.last_touched > limit_s and org_id not in busy_orgs
     ]
     for org_id in to_stop:
         log.info("hibernating org=%s", org_id)
