@@ -21,6 +21,8 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from pydantic import BaseModel, Field, field_validator
+
 from app.auth import Principal
 from app.composio_client import auth_config_id_for, get_composio_client
 from app.config import get_settings
@@ -28,6 +30,7 @@ from app.db import session_for_org
 from app.limits import limiter
 from app.middleware import get_principal, get_session
 from app.models import Agent, Connection
+from app.pipedream_client import PipedreamError, get_pipedream_client
 
 
 log = logging.getLogger(__name__)
@@ -328,3 +331,179 @@ def _failed_redirect(message: str) -> RedirectResponse:
     from urllib.parse import quote
     base = get_settings().web_base_url.rstrip("/")
     return RedirectResponse(url=f"{base}/connect?err={quote(message)}", status_code=302)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pipedream Connect endpoints — the white-label OAuth path.
+#
+# Flow:
+#   1. Frontend calls POST /connections/pipedream/connect-token (this file)
+#      → backend returns { token, external_user_id, project_id, environment }
+#   2. Frontend uses Pipedream's JS SDK with that token to open the connect
+#      modal — OAuth happens on the provider's domain, branded "Aki"
+#   3. On SDK success callback, frontend POSTs to /connections/pipedream/record
+#      with the resulting account_id
+#   4. Backend creates a Connection row with source=pipedream and NOTIFY's
+#      so per-org Hermes profiles rematerialize
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class PipedreamConnectTokenRequest(BaseModel):
+    agent_id: UUID | None = None
+
+
+class PipedreamRecordRequest(BaseModel):
+    account_id: str = Field(min_length=1, max_length=255)
+    app_slug: str = Field(min_length=1, max_length=64)
+    external_user_id: str = Field(min_length=1, max_length=255)
+    agent_id: UUID | None = None
+
+    @field_validator("app_slug")
+    @classmethod
+    def _slug_normalized(cls, v: str) -> str:
+        return v.strip().lower()
+
+
+@router.post("/pipedream/connect-token")
+@limiter.limit(lambda: get_settings().rate_limit_oauth)
+async def pipedream_connect_token(
+    request: Request,
+    body: PipedreamConnectTokenRequest,
+    principal: Principal = Depends(get_principal),
+    db: AsyncSession = Depends(get_session),
+) -> dict:
+    """Issue a Pipedream Connect Token the frontend SDK uses to start OAuth.
+
+    The token authorizes ONE end-user to connect accounts under our
+    project. We choose the external_user_id ourselves to keep Pipedream's
+    notion of "user" aligned with our (org_id) or (org_id, agent_id)
+    scopes.
+    """
+    settings = get_settings()
+    if not (settings.pipedream_client_id and settings.pipedream_client_secret):
+        raise HTTPException(503, "Pipedream Connect not configured")
+    if body.agent_id is not None:
+        await _validate_agent(db, principal.organization_id, body.agent_id)
+
+    eu = (
+        str(principal.organization_id)
+        if body.agent_id is None
+        else f"{principal.organization_id}:{body.agent_id}"
+    )
+    pd = get_pipedream_client()
+    try:
+        d = await pd.create_connect_token(
+            external_user_id=eu,
+            allowed_origins=[settings.web_base_url.rstrip("/")],
+            success_redirect_uri=f"{settings.web_base_url.rstrip('/')}/connect?ok=1",
+            error_redirect_uri=f"{settings.web_base_url.rstrip('/')}/connect?err=oauth_failed",
+        )
+    except PipedreamError as e:
+        log.exception("pipedream create_connect_token failed")
+        raise HTTPException(502, f"upstream: {e}")
+
+    return {
+        "token": d.get("token") or d.get("connect_token"),
+        "expires_at": d.get("expires_at"),
+        # connect_link_url is the hosted-OAuth fallback — frontend can either
+        # use the JS SDK with `token`, OR redirect the user straight to this
+        # URL. The hosted flow is simpler; SDK is needed only for embedding
+        # the consent modal inside our own UI.
+        "connect_link_url": d.get("connect_link_url"),
+        "external_user_id": eu,
+        "project_id": settings.pipedream_project_id,
+        "environment": settings.pipedream_environment,
+        "agent_id": str(body.agent_id) if body.agent_id else None,
+    }
+
+
+@router.post("/pipedream/record", status_code=status.HTTP_201_CREATED)
+@limiter.limit(lambda: get_settings().rate_limit_oauth)
+async def pipedream_record(
+    request: Request,
+    body: PipedreamRecordRequest,
+    principal: Principal = Depends(get_principal),
+    db: AsyncSession = Depends(get_session),
+) -> dict:
+    """Record a successful Pipedream OAuth. The frontend SDK fires its
+    `onConnect` callback with an account_id; the frontend POSTs that here
+    along with the metadata we issued at /connect-token time.
+
+    Verification: we re-fetch the account from Pipedream's API by id, both
+    to confirm it exists and to read the canonical app slug + state. A
+    spoofed POST would fail this check."""
+    settings = get_settings()
+    if not (settings.pipedream_client_id and settings.pipedream_client_secret):
+        raise HTTPException(503, "Pipedream Connect not configured")
+    if body.agent_id is not None:
+        await _validate_agent(db, principal.organization_id, body.agent_id)
+
+    # Authz: external_user_id must match the principal's expected scope.
+    expected_eu = (
+        str(principal.organization_id)
+        if body.agent_id is None
+        else f"{principal.organization_id}:{body.agent_id}"
+    )
+    if body.external_user_id != expected_eu:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "external_user_id does not match the principal's scope",
+        )
+
+    pd = get_pipedream_client()
+    try:
+        account = await pd.get_account(body.account_id)
+    except PipedreamError as e:
+        log.exception("pipedream get_account failed account=%s", body.account_id)
+        raise HTTPException(502, f"upstream account verify failed: {e}")
+
+    # Pipedream may return either the app slug as `name_slug` (newer) or
+    # under `app.name_slug` (older). Accept both.
+    canonical_app = (
+        account.get("name_slug")
+        or (account.get("app") or {}).get("name_slug")
+        or body.app_slug
+    )
+
+    existing = await db.scalar(
+        select(Connection).where(
+            Connection.organization_id == principal.organization_id,
+            Connection.external_account_id == body.account_id,
+        )
+    )
+    if existing is not None:
+        existing.status = "active"
+        existing.agent_id = body.agent_id
+        existing.provider = canonical_app
+        existing.config = {
+            **(existing.config or {}),
+            "source": "pipedream",
+            "account_id": body.account_id,
+            "external_user_id": expected_eu,
+            "app_slug": canonical_app,
+        }
+        row = existing
+    else:
+        row = Connection(
+            id=uuid4(),
+            organization_id=principal.organization_id,
+            agent_id=body.agent_id,
+            provider=canonical_app,
+            external_account_id=body.account_id,
+            scopes=[],
+            config={
+                "source": "pipedream",
+                "account_id": body.account_id,
+                "external_user_id": expected_eu,
+                "app_slug": canonical_app,
+            },
+            status="active",
+        )
+        db.add(row)
+
+    await db.execute(
+        text("SELECT pg_notify('org_connections_changed', :oid)"),
+        {"oid": str(principal.organization_id)},
+    )
+    await db.commit()
+    return _row_to_json(row)

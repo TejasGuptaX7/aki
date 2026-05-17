@@ -69,7 +69,7 @@ class Settings(BaseSettings):
     embedding_model: str = "text-embedding-3-small"
     embedding_dims: int = 1536
 
-    # Connectors
+    # Connectors — Composio (sunsetting; retained until migration completes)
     composio_api_key: str | None = None
     composio_base_url: str = "https://backend.composio.dev"
     composio_webhook_secret: str | None = None
@@ -77,9 +77,42 @@ class Settings(BaseSettings):
     composio_slack_auth_config_id: str | None = None
     composio_slackbot_auth_config_id: str | None = None
 
-    # Browser Use Cloud — long-tail no-API tools.
+    # Connectors — Pipedream Connect (primary long-tail API layer).
+    # client_credentials OAuth: backend exchanges (client_id, client_secret)
+    # at /v1/oauth/token for a short-lived JWT, then uses Bearer + X-PD-Environment
+    # on every Connect API call.
+    pipedream_project_id: str | None = None         # proj_xxxxx
+    pipedream_client_id: str | None = None
+    pipedream_client_secret: str | None = None
+    pipedream_environment: Literal["development", "production"] = "development"
+    pipedream_base_url: str = "https://api.pipedream.com"
+
+    # Connectors — Arcade (first-class agent-auth for top-20 tools).
+    arcade_api_key: str | None = None
+    arcade_base_url: str = "https://api.arcade.dev"
+
+    # Connectors — self-hosted browser harness (services/browser-harness).
+    # See services/browser-harness/PROTOCOL.md for the wire contract.
+    browser_harness_url: str | None = None          # http://browser-harness.aki.internal:7900
+    browser_harness_api_key: str | None = None
+
+    # Connectors — Browser Use Cloud (kept for fallback / deterministic ops).
     browser_use_api_key: str | None = None
     browser_use_mcp_base_url: str = "https://api.browser-use.com"
+
+    # Slack — the Aki app (registered at api.slack.com; OAuth flow runs via
+    # Pipedream Connect so the consent screen is white-labeled to "Aki").
+    slack_signing_secret: str | None = None         # for /webhooks/slack verification
+    slack_client_id: str | None = None
+    slack_app_id: str | None = None
+
+    # Rate limits — per-org daily caps and the platform-wide circuit breaker.
+    # The product is free during beta; without billing we need these to
+    # prevent a single abuser from burning weeks of credits in one weekend.
+    rate_limit_daily_actions: int = 500             # agent chat actions / day / org
+    rate_limit_daily_browser_seconds: int = 3600    # browser harness seconds / day / org
+    rate_limit_daily_llm_cents: int = 5000          # LLM spend cents / day / org ($50)
+    platform_daily_spend_cap_cents: int = 50_000    # total platform $/day before pausing signups ($500)
 
 
     @field_validator("cors_origins", mode="before")

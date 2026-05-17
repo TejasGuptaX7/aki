@@ -1,28 +1,54 @@
-"""Build the per-agent mcp.servers list for one Hermes profile's config.yaml.
+"""Build the per-agent mcp_servers list for one Hermes profile's config.yaml.
 
 The control plane never executes tool calls itself — Hermes does, via MCP.
-This function's only job is to translate `connections` rows into the YAML
-shape Hermes expects, which is then written to the per-agent workspace at
-`${HERMES_DATA_DIR}/<org_id>/agents/<agent_id>/config.yaml` at boot and
-on NOTIFY org_connections_changed.
+This function's only job is to translate `connections` rows + global service
+config into the list Hermes expects, written to the per-agent workspace at
+`${HERMES_DATA_DIR}/<org_id>/agents/<agent_id>/config.yaml` at boot.
 
 Per-agent scoping rules (see docs/architecture.md §6):
   - connection.agent_id IS NULL  → org-wide, visible to every agent
   - connection.agent_id = X      → visible only to agent X
 
 A given agent's MCP server list is the union of (org-wide ∪ its own).
+
+Source kinds (`connection.config.source`):
+  - "pipedream"       → Pipedream Connect; one MCP server per external_user
+                        (org-wide and per-agent get separate entries)
+  - "arcade"          → Arcade.dev; one MCP server, per-user via header
+  - "browser_harness" → self-hosted services/browser-harness; see PROTOCOL.md
+  - "browser_use"     → Browser Use Cloud (kept as fallback)
+  - "composio"        → legacy; sunsetting after Pipedream migration completes.
+                        Existing rows keep working; UI no longer creates new ones.
+  - "custom"          → BYO MCP URL, passed through verbatim
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 from uuid import UUID
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.arcade_client import get_arcade_client
 from app.composio_client import get_composio_client
 from app.config import get_settings
 from app.models import Connection
+from app.pipedream_client import get_pipedream_client
+
+
+log = logging.getLogger(__name__)
+
+
+def _arcade_user_id(org_id: UUID, agent_id: UUID | None) -> str:
+    """Per-user identifier we hand to Arcade. Org-wide connections live
+    under the org id; per-agent under `<org>:<agent>`."""
+    return str(org_id) if agent_id is None else f"{org_id}:{agent_id}"
+
+
+def _pipedream_external_user_id(org_id: UUID, agent_id: UUID | None) -> str:
+    """Per-user identifier we hand to Pipedream Connect. Same shape as Arcade."""
+    return str(org_id) if agent_id is None else f"{org_id}:{agent_id}"
 
 
 async def materialize_mcp_servers(
@@ -32,14 +58,12 @@ async def materialize_mcp_servers(
 ) -> list[dict[str, Any]]:
     """Return MCP server entries this agent should have access to.
 
-    If `agent_id` is None, returns all org-wide connections only (used for
-    org-level introspection / debugging, not for actual agent runtime).
+    If `agent_id` is None, returns only org-wide entries (for debugging /
+    org-level introspection). Per-agent calls return the union of org-wide
+    + agent-scoped.
 
-    Composio session is keyed on `org_id` (not agent_id) because Composio
-    Auth Configs live at the entity level and the tool router automatically
-    surfaces tools for ALL connected accounts under that entity. Once we
-    migrate to Pipedream/Arcade (which support per-user scoping), this can
-    become per-agent.
+    Any service whose env config is missing is silently skipped — local dev
+    boxes don't have to set every key to boot.
     """
     settings = get_settings()
     servers: list[dict[str, Any]] = []
@@ -60,47 +84,135 @@ async def materialize_mcp_servers(
         )
     ).scalars().all()
 
-    has_composio = any(
-        (r.config or {}).get("source", "composio") == "composio" for r in rows
-    )
-    if has_composio and settings.composio_api_key:
-        session = await get_composio_client().create_tool_router_session(org_id)
+    sources = {(r.config or {}).get("source") for r in rows}
+    org_wide_rows = [r for r in rows if r.agent_id is None]
+    agent_rows = [r for r in rows if agent_id is not None and r.agent_id == agent_id]
+
+    # ── Pipedream Connect ──────────────────────────────────────────────────
+    # One MCP endpoint per (project, external_user). We add one for the
+    # org-wide entity if there's any org-wide Pipedream connection, and a
+    # separate one for the per-agent entity if there's any agent-scoped one.
+    # Hermes sees both as independent MCP servers and surfaces tools from
+    # the union — exactly what we want for the (org-wide ∪ per-agent) rule.
+    if "pipedream" in sources and settings.pipedream_client_id:
+        try:
+            pd = get_pipedream_client()
+            mcp_headers = await pd.mcp_headers()
+            if any((r.config or {}).get("source") == "pipedream" for r in org_wide_rows):
+                eu = _pipedream_external_user_id(org_id, None)
+                servers.append(
+                    {
+                        "name": "pipedream-org",
+                        "transport": "http",
+                        "url": pd.mcp_url(eu),
+                        "headers": mcp_headers,
+                    }
+                )
+            if agent_id is not None and any(
+                (r.config or {}).get("source") == "pipedream" for r in agent_rows
+            ):
+                eu = _pipedream_external_user_id(org_id, agent_id)
+                servers.append(
+                    {
+                        "name": "pipedream-agent",
+                        "transport": "http",
+                        "url": pd.mcp_url(eu),
+                        "headers": mcp_headers,
+                    }
+                )
+        except Exception:
+            log.exception("pipedream MCP materialize failed; skipping")
+
+    # ── Arcade.dev ─────────────────────────────────────────────────────────
+    # Single MCP endpoint; per-user scoping via X-Arcade-User-Id header.
+    # We add separate org-wide vs per-agent entries because they need
+    # different headers — Hermes treats them as independent servers.
+    if "arcade" in sources and settings.arcade_api_key:
+        try:
+            ac = get_arcade_client()
+            if any((r.config or {}).get("source") == "arcade" for r in org_wide_rows):
+                servers.append(
+                    {
+                        "name": "arcade-org",
+                        "transport": "http",
+                        "url": ac.mcp_url(),
+                        "headers": ac.mcp_headers(_arcade_user_id(org_id, None)),
+                    }
+                )
+            if agent_id is not None and any(
+                (r.config or {}).get("source") == "arcade" for r in agent_rows
+            ):
+                servers.append(
+                    {
+                        "name": "arcade-agent",
+                        "transport": "http",
+                        "url": ac.mcp_url(),
+                        "headers": ac.mcp_headers(_arcade_user_id(org_id, agent_id)),
+                    }
+                )
+        except Exception:
+            log.exception("arcade MCP materialize failed; skipping")
+
+    # ── Self-hosted Browser Harness ────────────────────────────────────────
+    # See services/browser-harness/PROTOCOL.md for the wire contract.
+    # X-Aki-Agent-Id is set statically per-profile here (NOT per-call by
+    # Hermes); each agent profile has its own materialized config, so the
+    # static header is correctly scoped.
+    if (
+        "browser_harness" in sources
+        and settings.browser_harness_url
+        and settings.browser_harness_api_key
+    ):
+        headers = {
+            "Authorization": f"Bearer {settings.browser_harness_api_key}",
+            "X-Aki-Org-Id": str(org_id),
+        }
+        if agent_id is not None:
+            headers["X-Aki-Agent-Id"] = str(agent_id)
         servers.append(
             {
-                "name": "composio",
-                "transport": session.mcp_type,
-                "url": session.mcp_url,
-                "headers": {"x-api-key": settings.composio_api_key},
+                "name": "browser",
+                "transport": "http",
+                "url": f"{settings.browser_harness_url.rstrip('/')}/mcp",
+                "headers": headers,
             }
         )
 
-    seen_browser = False
-    for r in rows:
-        cfg = r.config or {}
-        source = cfg.get("source")
+    # ── Browser Use Cloud (fallback) ───────────────────────────────────────
+    elif "browser_use" in sources and settings.browser_use_api_key:
+        # Else-if because if both are connected, prefer the self-hosted one.
+        # The agent shouldn't see two browser MCPs competing.
+        servers.append(
+            {
+                "name": "browser",
+                "transport": "http",
+                "url": "https://api.browser-use.com/v3/mcp",
+                "headers": {"x-browser-use-api-key": settings.browser_use_api_key},
+            }
+        )
 
-        if (
-            source == "browser_use"
-            and not seen_browser
-            and settings.browser_use_api_key
-        ):
-            # Browser Use Cloud — one shared MCP endpoint, agent creates
-            # per-call sessions via the run_session tool. Per-org isolation
-            # is enforced by Browser Use's session model; we pass org_id +
-            # agent_id as tags so their dashboard groups runs cleanly.
+    # ── Composio (legacy; sunsetting) ──────────────────────────────────────
+    # Kept so existing connections don't break the moment Pipedream lands.
+    # Will be deleted in a follow-up once all customers have re-OAuth'd.
+    if "composio" in sources and settings.composio_api_key:
+        try:
+            comp = get_composio_client()
+            session = await comp.create_tool_router_session(org_id)
             servers.append(
                 {
-                    "name": "browser",
-                    "transport": "http",
-                    "url": "https://api.browser-use.com/v3/mcp",
-                    "headers": {
-                        "x-browser-use-api-key": settings.browser_use_api_key,
-                    },
+                    "name": "composio",
+                    "transport": session.mcp_type,
+                    "url": session.mcp_url,
+                    "headers": {"x-api-key": settings.composio_api_key},
                 }
             )
-            seen_browser = True
+        except Exception:
+            log.exception("composio MCP materialize failed; skipping (legacy)")
 
-        elif source == "custom" and cfg.get("mcp_url"):
+    # ── Custom BYO MCP ─────────────────────────────────────────────────────
+    for r in rows:
+        cfg = r.config or {}
+        if cfg.get("source") == "custom" and cfg.get("mcp_url"):
             entry: dict[str, Any] = {
                 "name": r.provider,
                 "transport": cfg.get("transport", "http"),

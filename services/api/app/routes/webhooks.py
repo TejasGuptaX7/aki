@@ -21,6 +21,7 @@ from app.config import get_settings
 from app.db import session_for_org, SessionLocal
 from app.limits import limiter
 from app.models import Agent, AgentMemory, Organization, User
+from app.rate_limits import check_global_circuit_breaker
 from app.routes.agents import DEFAULT_SYSTEM_PROMPT
 
 
@@ -78,6 +79,12 @@ async def clerk_webhook(request: Request) -> None:
         ).scalar_one_or_none()
         if existing:
             return  # idempotent replay
+
+        # Global circuit breaker: if the platform is over today's spend cap,
+        # refuse new signups. svix will retry the webhook; when we're back
+        # under-budget, the retry succeeds and the user is provisioned.
+        # Existing users keep working — only NEW orgs get gated.
+        await check_global_circuit_breaker(db)
 
         org = Organization(id=uuid4(), name=_domain_from_email(email))
         db.add(org)

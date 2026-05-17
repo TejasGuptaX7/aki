@@ -36,10 +36,12 @@ from app.agent_runtime import OrgContainer, ensure_agent_loaded
 from app.audit import append_audit
 from app.auth import Principal
 from app.config import get_settings
+from app.consent import Tier, tier_for_tool
 from app.db import session_for_org
 from app.middleware import get_principal, get_session
 from app.models import Agent
 from app.pricing import estimate_cost_usd
+from app.rate_limits import Kind as RLKind, enforce_daily_cap, record_usage
 
 
 log = logging.getLogger(__name__)
@@ -91,35 +93,49 @@ async def _flush_audit(
     async with session_for_org(org_id) as db:
         for evt in tool_events:
             try:
+                tool_name = evt.get("tool") or ""
+                tier = tier_for_tool(tool_name)
+                payload = {
+                    "tool": tool_name,
+                    "status": evt.get("status"),
+                    "label": evt.get("label"),
+                    "container_id": container_id,
+                    "tier": int(tier),
+                }
+                if tier is Tier.FORBID:
+                    # v1: log loudly so the operator notices. Real enforcement
+                    # (MCP-layer interception that refuses these tools) is on
+                    # the v2 roadmap; for now we rely on OAuth scoping +
+                    # system prompt to prevent reaching this branch.
+                    log.error(
+                        "SECURITY: tier-3 (forbid) tool called org=%s agent=%s tool=%s",
+                        org_id, agent_id, tool_name,
+                    )
+                    payload["security_alert"] = True
                 await append_audit(
                     db,
                     org_id,
                     actor=actor,
                     action="chat.tool_call",
                     target=evt.get("toolCallId") or evt.get("tool_call_id") or "",
-                    payload={
-                        "tool": evt.get("tool"),
-                        "status": evt.get("status"),
-                        "label": evt.get("label"),
-                        "container_id": container_id,
-                    },
+                    payload=payload,
                     agent_id=agent_id,
                 )
             except Exception:
                 log.exception("audit chat.tool_call failed for evt=%s", evt)
 
-        try:
-            usage = final_usage or {}
-            model_name = get_settings().hermes_model_name
-            cost_usd = (
-                estimate_cost_usd(
-                    model_name,
-                    int(usage.get("prompt_tokens") or 0),
-                    int(usage.get("completion_tokens") or 0),
-                )
-                if usage
-                else 0.0
+        usage = final_usage or {}
+        model_name = get_settings().hermes_model_name
+        cost_usd = (
+            estimate_cost_usd(
+                model_name,
+                int(usage.get("prompt_tokens") or 0),
+                int(usage.get("completion_tokens") or 0),
             )
+            if usage
+            else 0.0
+        )
+        try:
             await append_audit(
                 db,
                 org_id,
@@ -137,6 +153,17 @@ async def _flush_audit(
             )
         except Exception:
             log.exception("audit chat.complete failed")
+
+        # Record daily-cap usage. 1 action per chat turn, llm spend in cents
+        # rounded up (better to over-count than under-count for abuse defense).
+        try:
+            await record_usage(db, org_id, RLKind.ACTIONS, 1)
+            cost_cents = max(1, int(round(cost_usd * 100))) if cost_usd > 0 else 0
+            if cost_cents:
+                await record_usage(db, org_id, RLKind.LLM_CENTS, cost_cents)
+        except Exception:
+            log.exception("rate_limits record_usage failed")
+
         await db.commit()
 
 
@@ -189,6 +216,11 @@ async def chat_completions(
             status.HTTP_409_CONFLICT,
             f"agent status={agent.status}; cannot chat",
         )
+
+    # Cap check before any expensive work (cold-starting a container costs
+    # ~10s of compute; refusing here saves that for abusive orgs).
+    await enforce_daily_cap(db, principal.organization_id, RLKind.ACTIONS)
+    await enforce_daily_cap(db, principal.organization_id, RLKind.LLM_CENTS)
 
     body = await request.body()
     body = _inject_system_prompt(body, agent.system_prompt)
