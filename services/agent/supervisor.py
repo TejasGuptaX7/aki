@@ -111,7 +111,15 @@ def _read_manifest() -> list[dict]:
 async def _spawn_profile(entry: dict) -> Profile:
     """Spawn `hermes -p <agent_id> gateway run --port <internal>` and wait
     for its API server to become healthy. Each profile gets its own API key
-    so per-process auth is enforced even on localhost."""
+    so per-process auth is enforced even on localhost.
+
+    Hermes 0.13 requires profiles to exist before `-p X` can use them, so
+    we run `hermes profile create <agent_id>` first. The create step is
+    treated as idempotent: if the profile already exists from a previous
+    container boot (mounted volume persists between hibernation cycles),
+    the gateway run will succeed regardless of whether create was a no-op
+    or returned a non-zero "already exists" code.
+    """
     import secrets
 
     agent_id = entry["id"]
@@ -128,6 +136,28 @@ async def _spawn_profile(entry: dict) -> Profile:
     env["API_SERVER_HOST"] = "127.0.0.1"
     env["API_SERVER_PORT"] = str(port)
     env["API_SERVER_KEY"] = api_key
+
+    # Profile create — idempotent in effect. Hermes prints to stderr if the
+    # profile already exists and exits non-zero, but the gateway run will
+    # succeed in either case (existed or just-created), so we don't gate
+    # on the rc.
+    log.info("profile create agent_id=%s", agent_id)
+    create_proc = await asyncio.create_subprocess_exec(
+        "hermes", "profile", "create", agent_id,
+        env=env,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    create_out_b, _ = await create_proc.communicate()
+    if create_proc.returncode != 0:
+        # Probably "already exists" — log at info, not error. If it's a
+        # real failure the gateway spawn below will fail with the same
+        # message we just logged.
+        log.info(
+            "profile create rc=%d for %s: %s",
+            create_proc.returncode, agent_id,
+            create_out_b.decode("utf-8", errors="replace").strip()[:200],
+        )
 
     log.info("spawning profile agent_id=%s slug=%s port=%d", agent_id, slug, port)
     proc = await asyncio.create_subprocess_exec(
