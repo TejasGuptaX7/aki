@@ -121,6 +121,29 @@ export const connectionsApi = {
     const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
     return request<unknown>(gt, "POST", `/connections/browser/disable${q}`);
   },
+  pipedreamConnectToken: (gt: Fetcher, agentId?: string) =>
+    request<PipedreamConnectToken>(gt, "POST", "/connections/pipedream/connect-token", {
+      agent_id: agentId ?? null,
+    }),
+  pipedreamRecord: (gt: Fetcher, body: PipedreamRecordBody) =>
+    request<Connection>(gt, "POST", "/connections/pipedream/record", body),
+};
+
+export type PipedreamConnectToken = {
+  token: string;
+  expires_at: string;
+  connect_link_url: string;
+  external_user_id: string;
+  project_id: string;
+  environment: "development" | "production";
+  agent_id: string | null;
+};
+
+export type PipedreamRecordBody = {
+  account_id: string;
+  app_slug: string;
+  external_user_id: string;
+  agent_id?: string | null;
 };
 
 // Audit --------------------------------------------------------------
