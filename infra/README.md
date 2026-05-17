@@ -1,14 +1,24 @@
 # Aki infra
 
 Everything needed to take Aki from zero to a running production deploy on
-Fly + Vercel + Neon + Cloudflare. This is the founder runbook.
+Fly + Vercel + Neon + Cloudflare. **Start with [`DEPLOY.md`](DEPLOY.md)** —
+this README is the map.
 
 ```
 infra/
 ├── README.md              ← you are here
+├── DEPLOY.md              ← end-to-end deploy runbook (start here)
+├── fly-deploy.sh          ← idempotent deploy script driving the runbook
 ├── secrets-bootstrap.md   ← every secret name + where its value comes from
+├── decisions/
+│   ├── 0001-deploy-target.md   ← Path B (single host with docker.sock)
+│   └── 0002-fly-with-dind.md   ← Path B on Fly via sidecar dockerd
 ├── fly/
 │   ├── api.toml           ← Fly Machines config for services/api
+│   ├── api/
+│   │   ├── Dockerfile     ← wraps services/api with dockerd + iptables
+│   │   └── entrypoint.sh  ← boots dockerd then exec's uvicorn
+│   ├── proxy.toml         ← Fly Machines config for services/browser-harness/proxy
 │   └── agent.md           ← why services/agent has no fly.toml (per-org spawn)
 └── grafana/
     ├── api.dashboard.json
@@ -16,42 +26,37 @@ infra/
     └── browser-harness.dashboard.json
 ```
 
-The three services:
+The four services:
 
-| Service                    | Where it runs                         | Owned config                                  |
-| -------------------------- | ------------------------------------- | --------------------------------------------- |
-| `services/api`             | Fly app `aki-api` (always-on)         | `infra/fly/api.toml`                          |
-| `services/agent` (Hermes)  | Per-org Fly Machine, spawned on demand | GHCR image only, no Fly app — see `fly/agent.md` |
-| `services/browser-harness` | Fly app `aki-browser-harness`         | `services/browser-harness/fly.toml` (owned by harness lane) |
-| `apps/web`                 | Vercel                                | `apps/web/vercel.json`                        |
+| Service                          | Where it runs                                                    | Owned config                                |
+| -------------------------------- | ---------------------------------------------------------------- | ------------------------------------------- |
+| `services/api`                   | Fly app `aki-api` (single privileged Machine, dockerd sidecar)   | `infra/fly/api.toml` + `infra/fly/api/`     |
+| `services/agent` (Hermes)        | Per-org Docker container on the api Machine (Path B)             | GHCR image only — see `fly/agent.md`        |
+| `services/browser-harness/proxy` | Fly app `aki-browser-harness` (v2 lean proxy)                    | `infra/fly/proxy.toml`                      |
+| `apps/web`                       | Vercel                                                           | `apps/web/vercel.json`                      |
 
-## Open architectural question — DO NOT skip this
+> The older `services/browser-harness/fly.toml` is the v1 chromium-in-image
+> harness, owned by the harness lane. v2 (proxy/) is what we deploy now;
+> see ADR-0002 for the cutover.
 
-`services/api/app/agent_runtime.py` spawns per-org Hermes containers via
-`docker.from_env()`, which talks to `/var/run/docker.sock`. **Fly Machines
-does not expose a Docker daemon to apps.** The api Dockerfile builds
-correctly and starts on Fly, but the spawn path will raise on the first
-chat message.
+## Architecture in one paragraph
 
-Two paths forward (pick **one**, then file a backend ticket):
-
-**(a)** Host `services/api` on **Railway** or a small **EC2** instance
-where `docker.sock` is available. Keep agent_runtime.py as-is. Pros:
-zero code change. Cons: another platform, no Fly's built-in proxy/TLS,
-have to wire CI separately.
-
-**(b)** Swap `docker.from_env()` for a thin **Fly Machines API** client
-inside agent_runtime.py. Pros: everything stays on Fly, per-org Machines
-get all of Fly's volume + region story for free. Cons: a real backend
-change (~few hundred lines incl. tests), needs `FLY_API_TOKEN` with
-`machines:write` + `volumes:write` on the api app.
-
-**Recommended: (b).** Cheaper long-term, gives us per-org regions and
-volumes for free, and keeps observability in one place.
-
-Tracked TODO in `services/api/Dockerfile` and `infra/fly/api.toml`.
+Path B (ADR-0001) + sidecar dockerd on Fly (ADR-0002). The api Machine
+boots dockerd in the background before uvicorn starts, so
+`docker.from_env()` in `services/api/app/agent_runtime.py` finds a local
+socket and per-org Hermes containers spawn on the same Machine. State
+(`/var/lib/aki/docker` + `/var/lib/aki/hermes`) lives on a Fly volume
+that survives Machine restarts. The api Machine is **privileged**;
+that's an org-level approval from Fly. See
+[`DEPLOY.md`](DEPLOY.md#privileged-mode) for what to do if your org
+isn't approved yet.
 
 ## Zero → running, end to end
+
+**The whole pipeline is now driven by [`DEPLOY.md`](DEPLOY.md) +
+[`fly-deploy.sh`](fly-deploy.sh).** The sections below predate that
+runbook and survive only as backing context for individual steps
+(Neon setup, Cloudflare cert flow, etc.). Read `DEPLOY.md` first.
 
 ### 1. Accounts you need
 
@@ -113,36 +118,27 @@ Follow [`infra/secrets-bootstrap.md`](secrets-bootstrap.md). Do this
 
 ### 6. First deploy
 
+See [`DEPLOY.md`](DEPLOY.md#5-deploy). One command:
+
 ```bash
-# api
-flyctl apps create aki-api --org <your-fly-org>
-flyctl ips allocate-v4 --app aki-api    # (or -v6; one shared v4 is fine to start)
-flyctl deploy --config infra/fly/api.toml --remote-only
-
-# agent image (no Fly app; just push the image once so the api has
-# something to spawn from)
-gh workflow run agent-image-build.yml --ref main
-
-# browser-harness (owned by the harness lane)
-cd services/browser-harness && flyctl deploy
+FLY_ORG=<your-org> infra/fly-deploy.sh all
 ```
 
-After that, `git push origin main` triggers the workflows:
-
-- `.github/workflows/api-deploy.yml` → build, migrate, deploy
-- `.github/workflows/agent-image-build.yml` → build + push agent image
-- (harness lane ships its own workflow)
+The script creates the apps, the api volume, Upstash Redis, deploys both
+images, flips the api Machine to privileged, and smokes both healthchecks.
+Re-running is idempotent.
 
 ### 7. Smoke test
 
 ```bash
-curl https://api.aki.dev/health        # → {"status":"ok"}
-curl https://app.aki.dev               # → Next.js landing
+curl https://api.aki.dev/health                            # → {"status":"ok"}
+curl https://aki-browser-harness.fly.dev/healthz           # → {"status":"ok"}
+curl https://app.aki.dev                                   # → Next.js landing (Vercel)
 ```
 
-Sign in via Clerk, connect a toolkit (Gmail / Slack), send a chat
-message. The first message will fail until the docker.sock-on-Fly
-question is resolved (see top of this file).
+Sign in via Clerk, connect a toolkit, send a chat message. First message
+per org pays one ~5-10s cold-start while dockerd spawns the per-org
+Hermes container.
 
 ## CI/CD summary
 
@@ -177,6 +173,7 @@ the web app — out of scope for this infra lane.
 - SOC 2 paperwork / compliance frameworks (founder deferred)
 - Stripe / billing wiring (deferred)
 - Real SSO/SAML (Clerk org-scoped auth only, for now)
-- The `docker.from_env()` → Fly Machines API migration (backend lane)
+- Migration from Path B → Path A (Fly Machines API spawner) — see triggers
+  in ADR-0001 §"What this defers"
 - Anything inside `services/api/`, `apps/web/`, or
   `services/browser-harness/` source trees (owned by their respective lanes)

@@ -1,0 +1,86 @@
+# Aki browser-harness v2 proxy on Fly Machines.
+#
+# This is the lean v2 proxy from services/browser-harness/proxy/: no
+# Chromium in the image (~120 MB), all browser execution happens on
+# Steel/Browserbase via their respective adapters. Profile state lives
+# in Cloudflare R2 (boto3 + S3 API).
+#
+# Distinct from services/browser-harness/fly.toml (the v1 chromium-in-image
+# harness, owned by the harness lane). v2 is the production target.
+#
+# Deploy: see infra/fly-deploy.sh and infra/DEPLOY.md.
+
+app            = "aki-browser-harness"
+primary_region = "iad"
+kill_signal    = "SIGTERM"
+kill_timeout   = "15s"
+
+[build]
+  # Build context is the proxy directory because the existing Dockerfile
+  # uses relative COPYs (`COPY requirements.txt`, `COPY __init__.py …`).
+  dockerfile = "../../services/browser-harness/proxy/Dockerfile"
+
+[deploy]
+  strategy = "rolling"
+
+[env]
+  PORT      = "7901"
+  HOST      = "0.0.0.0"
+  LOG_LEVEL = "INFO"
+  # Pool tuning (matches services/browser-harness/proxy/pool.py defaults).
+  BROWSER_HARNESS_IDLE_SECONDS     = "600"
+  BROWSER_HARNESS_HARD_MAX_SECONDS = "1800"
+  # Default routing: Steel for everything until per-platform routes need
+  # to override (`BROWSER_HARNESS_PLATFORM_ROUTES` secret holds the JSON).
+  BROWSER_HARNESS_DEFAULT_BACKEND  = "steel"
+  # Profile bucket is hard-coded in profile_store.py default; explicit
+  # env keeps the deploy self-documenting.
+  BROWSER_HARNESS_R2_BUCKET        = "aki-browser-profiles"
+  BROWSER_HARNESS_R2_REGION        = "auto"
+
+[http_service]
+  internal_port        = 7901
+  force_https          = true
+  # The proxy is stateless beyond the in-memory CDP session pool. Auto-
+  # stop is safe: a new request boots a fresh Machine within ~2s. We
+  # keep one warm in iad so api->proxy calls don't pay cold start during
+  # business hours.
+  auto_stop_machines   = "stop"
+  auto_start_machines  = true
+  min_machines_running = 1
+  processes            = ["app"]
+
+  [http_service.concurrency]
+    type        = "requests"
+    hard_limit  = 50
+    soft_limit  = 30
+
+  [[http_service.checks]]
+    grace_period = "30s"
+    interval     = "15s"
+    method       = "GET"
+    timeout      = "3s"
+    path         = "/healthz"
+
+[[vm]]
+  # Pure I/O wait on Steel/Browserbase + small JSON munging. shared-cpu
+  # is fine; bump to performance if p95 latency starts being CPU-bound.
+  size      = "shared-cpu-1x"
+  memory_mb = 1024
+  cpu_kind  = "shared"
+  cpus      = 1
+
+[processes]
+  app = "python server.py"
+
+# Secrets consumed (set via `fly secrets set ... --app aki-browser-harness`):
+#   BROWSER_HARNESS_API_KEY         — same value as on aki-api
+#   BROWSER_HARNESS_R2_ENDPOINT     — https://<account>.r2.cloudflarestorage.com
+#   BROWSER_HARNESS_R2_ACCESS_KEY
+#   BROWSER_HARNESS_R2_SECRET_KEY
+#   BROWSER_HARNESS_ALLOWED_HOSTS   — optional CSV SSRF allowlist for
+#                                      customers with internal tools
+#   BROWSER_HARNESS_PLATFORM_ROUTES — optional JSON, see router.py
+#   STEEL_API_KEY                   — Steel.dev session API key
+#   BROWSERBASE_API_KEY             — Browserbase fallback / per-route override
+#   BROWSERBASE_PROJECT_ID

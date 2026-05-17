@@ -1,72 +1,120 @@
 # Aki control plane on Fly Machines.
 #
-# Deploy:
-#   flyctl deploy --config infra/fly/api.toml --image ghcr.io/akiapp/api:<sha>
+# Deploy: see infra/fly-deploy.sh and infra/DEPLOY.md.
+#
+# Architecture: ADR-0001 (Path B — single host with docker.sock) +
+# ADR-0002 (run Path B on Fly via sidecar dockerd inside the api Machine).
+# Concretely: this Machine boots dockerd in the background, then uvicorn
+# spawns one per-org Hermes container on demand against the in-Machine
+# /var/run/docker.sock. dockerd state and per-org workspaces live on the
+# attached Fly volume (`/var/lib/aki`).
 #
 # Secrets are populated via `fly secrets set` (see infra/secrets-bootstrap.md).
 # This file references names only — never paste values here.
 #
-# Open issue (see infra/README.md): app/agent_runtime.py uses docker.sock to
-# spawn per-org Hermes containers. Fly Machines does not expose a docker
-# daemon. Either swap to the Fly Machines API or host the API elsewhere.
+# NOTE: This Machine requires `privileged = true` in its guest config to
+# run nested dockerd. fly.toml has no field for that today; the deploy
+# script flips it via the Fly Machines REST API after the first deploy.
+# See infra/DEPLOY.md "Privileged mode".
 
-app          = "aki-api"
+app            = "aki-api"
 primary_region = "iad"
+kill_signal    = "SIGTERM"
+kill_timeout   = "30s"
 
 [build]
-  dockerfile = "../../services/api/Dockerfile"
+  # Build context is the repo root; the wrapper Dockerfile layers dockerd
+  # on top of the canonical services/api image (see infra/fly/api/Dockerfile).
+  dockerfile = "infra/fly/api/Dockerfile"
 
 [deploy]
-  # Migrations run from the build image in CI before deploy (see
-  # .github/workflows/api-deploy.yml). Leaving release_command unset keeps
-  # the deploy idempotent on retries; if migrations have already been applied
-  # the CI step is a no-op.
-  strategy = "rolling"
+  # `immediate` (not rolling): the api Machine owns local dockerd state
+  # for live per-org Hermes containers. Rolling would stop the old
+  # Machine before the new one is healthy, killing all warm Hermes
+  # processes and forcing every connected org to cold-start on the new
+  # Machine. With one Machine, accept the few-second blip.
+  strategy = "immediate"
 
 [env]
-  APP_ENV            = "prod"
-  PORT               = "8000"
-  CORS_ORIGINS       = "https://app.aki.dev,https://aki.dev"
+  APP_ENV             = "prod"
+  PORT                = "8000"
+  CORS_ORIGINS        = "https://app.aki.dev,https://aki.dev"
   HERMES_IDLE_MINUTES = "15"
-  AGENT_RUNTIME      = "fly"
-  # docker.sock is unavailable on Fly; the runtime needs to know to take
-  # the Machines API path once that swap lands.
+  # Per agent_runtime.py: docker.from_env() always wins; this is for the
+  # config plumbing only (Settings.agent_runtime literal).
+  AGENT_RUNTIME       = "local"
+  # Hermes containers reach the api over Fly's internal 6PN address.
+  API_INTERNAL_URL    = "http://aki-api.internal:8000"
+  # Per-org workspace mount root (host side of the docker bind into Hermes).
+  HERMES_DATA_DIR     = "/var/lib/aki/hermes"
+  # dockerd socket is mounted into the same Machine; default DOCKER_HOST.
+  DOCKER_HOST         = "unix:///var/run/docker.sock"
+  # Hermes image tag the api will spawn; bumped together with the Hermes
+  # release. Keep in sync with agent_runtime.py IMAGE_TAG.
+  HERMES_IMAGE        = "ghcr.io/akiapp/aki-hermes:0.13.0"
 
 [http_service]
-  internal_port      = 8000
-  force_https        = true
-  auto_stop_machines = false   # control plane is always-on
-  auto_start_machines = true
+  internal_port        = 8000
+  force_https          = true
+  auto_stop_machines   = false   # control plane is always-on
+  auto_start_machines  = true
   min_machines_running = 1
-  processes          = ["app"]
+  processes            = ["app"]
 
   [[http_service.checks]]
-    grace_period  = "15s"
-    interval      = "15s"
-    method        = "GET"
-    timeout       = "5s"
-    path          = "/health"
+    # 60s grace covers dockerd boot + Hermes image warm-pull on cold start.
+    grace_period = "60s"
+    interval     = "15s"
+    method       = "GET"
+    timeout      = "5s"
+    path         = "/health"
 
+# Single Machine, sized to host ~30-50 concurrent Hermes containers
+# alongside dockerd + uvicorn. Bump to performance-4x (4 vCPU / 8 GB)
+# once per-org density crosses ~30 active orgs.
 [[vm]]
-  size       = "shared-cpu-1x"
-  memory_mb  = 2048
-  cpu_kind   = "shared"
-  cpus       = 1
+  size       = "performance-2x"
+  memory_mb  = 4096
+  cpu_kind   = "performance"
+  cpus       = 2
+
+[[mounts]]
+  source                  = "aki_api_data"
+  destination             = "/var/lib/aki"
+  initial_size            = "50gb"
+  # /var/lib/aki/docker — dockerd overlay2 store + per-org Hermes images
+  # /var/lib/aki/hermes  — per-org workspace directories bind-mounted
+  #                        into each Hermes container at /opt/data
+  auto_extend_size_threshold = 80
+  auto_extend_size_increment = "10gb"
+  auto_extend_size_limit     = "200gb"
 
 [processes]
-  app = "uvicorn app.main:app --host 0.0.0.0 --port 8000"
+  app = "/usr/local/bin/aki-entrypoint"
+  # Wrapper boots dockerd in the background, waits for the socket, then
+  # exec()s uvicorn (see infra/fly/api/entrypoint.sh). One process group
+  # so a dockerd crash trips the Fly healthcheck and restarts the Machine.
 
 # Secrets consumed (set via `fly secrets set ... --app aki-api`):
-#   DATABASE_URL
-#   DATABASE_URL_SYNC
+#   DATABASE_URL                  — Neon pooled (transaction) + asyncpg scheme
+#   DATABASE_URL_SYNC             — Neon direct + psycopg2 scheme (for alembic)
+#   REDIS_URL                     — Upstash for Redis on Fly (`fly redis create`)
 #   CLERK_SECRET_KEY
 #   CLERK_WEBHOOK_SECRET
 #   CLERK_JWKS_URL
 #   CLERK_JWT_ISSUER
 #   OPENAI_API_KEY
-#   PIPEDREAM_CLIENT_ID
-#   PIPEDREAM_CLIENT_SECRET
-#   PIPEDREAM_PROJECT_ID
+#   ANTHROPIC_API_KEY             — optional, only if hermes_model_provider=anthropic
 #   ARCADE_API_KEY
-#   BROWSER_HARNESS_API_KEY
-#   BROWSER_HARNESS_URL
+#   ARCADE_MCP_GATEWAY_SLUG
+#   ARCADE_VERIFIER_TOKEN
+#   BROWSER_HARNESS_API_KEY       — same value on aki-api and aki-browser-harness
+#   BROWSER_HARNESS_URL           — https://aki-browser-harness.internal:7901
+#   GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET
+#   NOTION_CLIENT_ID / NOTION_CLIENT_SECRET
+#   LINEAR_CLIENT_ID / LINEAR_CLIENT_SECRET
+#   HUBSPOT_CLIENT_ID / HUBSPOT_CLIENT_SECRET
+#   SLACK_CLIENT_ID / SLACK_CLIENT_SECRET / SLACK_SIGNING_SECRET
+#   GHCR_PULL_USERNAME / GHCR_PULL_TOKEN  — optional; entrypoint uses
+#                                           these to pre-pull the Hermes
+#                                           image on Machine boot
