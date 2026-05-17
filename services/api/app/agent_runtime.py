@@ -220,18 +220,30 @@ async def _seed_agent_workspace(
 ) -> None:
     """Create the per-agent workspace dir and the per-profile Hermes config.
 
-    Each Hermes profile loads its config from $HERMES_HOME/config.yaml at
-    `hermes -p <agent_id>` start. The mcp_servers dict is materialized from
-    the agent's visible connections (org-wide ∪ per-agent) plus the always-
-    present `approvals` internal MCP — see app/connectors/materialize.py
-    for the visibility rules.
+    Hermes 0.13 stores per-profile config at
+    `$HERMES_HOME/profiles/<profile_name>/config.yaml` and per-profile
+    secrets at `$HERMES_HOME/profiles/<profile_name>/.env` — NOT at the
+    HERMES_HOME root. The supervisor runs `hermes profile create
+    <agent_id>` which creates that profile subdir; we then overwrite the
+    config + secrets with our own values so the agent uses our model +
+    OAuth tokens + MCP servers instead of Hermes' defaults.
 
-    Hermes 0.13's config schema keys mcp_servers by name (not as a list),
-    so we collapse the list to a dict here.
+    Pre-creating the dir here (before the supervisor spawns) keeps the
+    sequence idempotent: if the supervisor's `hermes profile create`
+    finds the dir already populated, it's a no-op; if it's the first
+    boot, hermes fills in any bookkeeping it needs without overwriting
+    our files (Hermes's create command does NOT clobber an existing
+    config.yaml).
+
+    The mcp_servers dict is materialized from the agent's visible
+    connections (org-wide ∪ per-agent) plus the always-present
+    `approvals` internal MCP — see app/connectors/materialize.py for
+    the visibility rules.
     """
     settings = get_settings()
     agent_dir = _agent_dir(org_id, agent.id)
-    config_path = agent_dir / "config.yaml"
+    profile_dir = agent_dir / "profiles" / str(agent.id)
+    profile_dir.mkdir(parents=True, exist_ok=True)
 
     token = await _ensure_agent_service_token(db, org_id, agent)
     server_list = await materialize_mcp_servers(
@@ -251,8 +263,22 @@ async def _seed_agent_workspace(
         },
         "mcp_servers": mcp_servers,
     }
+    config_path = profile_dir / "config.yaml"
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
     config_path.chmod(0o600)
+
+    # Per-profile .env — Hermes reads it on profile start. Without
+    # OPENAI_API_KEY here, the `provider: custom` config above resolves
+    # api_key_env=OPENAI_API_KEY against an empty value and Hermes
+    # falls back to OpenRouter (returning 401, then 0/0/0 chats).
+    env_lines = []
+    if settings.openai_api_key:
+        env_lines.append(f"OPENAI_API_KEY={settings.openai_api_key}")
+    if settings.anthropic_api_key:
+        env_lines.append(f"ANTHROPIC_API_KEY={settings.anthropic_api_key}")
+    env_path = profile_dir / ".env"
+    env_path.write_text("\n".join(env_lines) + "\n" if env_lines else "")
+    env_path.chmod(0o600)
 
 
 # ─── Container lifecycle ────────────────────────────────────────────────────
