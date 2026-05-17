@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { ClerkProvider } from "@clerk/nextjs";
 import { Source_Serif_4, Geist, JetBrains_Mono } from "next/font/google";
+import { AgentsProvider } from "@/lib/agents";
 import "./globals.css";
 
 const sourceSerif = Source_Serif_4({
@@ -39,7 +40,9 @@ export default function RootLayout({
         lang="en"
         className={`${sourceSerif.variable} ${geist.variable} ${jetbrainsMono.variable} h-full antialiased`}
       >
-        <body className="min-h-full">{children}</body>
+        <body className="min-h-full">
+          <AgentsProvider>{children}</AgentsProvider>
+        </body>
       </html>
     </ClerkProvider>
   );
