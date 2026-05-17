@@ -63,6 +63,10 @@ class Agent(Base):
     slug: Mapped[str] = mapped_column(String(64))
     system_prompt: Mapped[str] = mapped_column(Text, default="")
     browser_profile_id: Mapped[str | None] = mapped_column(String(128))
+    # sha256(plaintext) of the service token the agent's Hermes profile uses
+    # to call /agent_internal/mcp. Null for legacy agents; minted on first
+    # cold-start in _seed_agent_workspace. See app/agent_tokens.py.
+    service_token_hash: Mapped[str | None] = mapped_column(String(128))
     status: Mapped[str] = mapped_column(String(32), default="active")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

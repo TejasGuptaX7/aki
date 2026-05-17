@@ -55,6 +55,8 @@ async def materialize_mcp_servers(
     db: AsyncSession,
     org_id: UUID,
     agent_id: UUID | None = None,
+    *,
+    agent_service_token: str | None = None,
 ) -> list[dict[str, Any]]:
     """Return MCP server entries this agent should have access to.
 
@@ -62,11 +64,34 @@ async def materialize_mcp_servers(
     org-level introspection). Per-agent calls return the union of org-wide
     + agent-scoped.
 
+    `agent_service_token`, when provided, adds the request_approval MCP
+    server pointing at our control plane's /agent_internal/mcp endpoint.
+    Caller is responsible for minting / persisting the token (see
+    agent_runtime._seed_agent_workspace).
+
     Any service whose env config is missing is silently skipped — local dev
     boxes don't have to set every key to boot.
     """
     settings = get_settings()
     servers: list[dict[str, Any]] = []
+
+    # ── request_approval (internal MCP) ────────────────────────────────────
+    # Always present when we have a token + an agent context. This is the
+    # consent gate: the agent calls this before any tier-2 action and waits
+    # for the user's yes/no via /approvals.
+    if agent_id is not None and agent_service_token:
+        servers.append(
+            {
+                "name": "approvals",
+                "transport": "http",
+                "url": f"{settings.api_internal_url.rstrip('/')}/agent_internal/mcp",
+                "headers": {
+                    "Authorization": f"Bearer {agent_service_token}",
+                    "X-Aki-Org-Id": str(org_id),
+                    "X-Aki-Agent-Id": str(agent_id),
+                },
+            }
+        )
 
     visibility = (
         (Connection.agent_id.is_(None))

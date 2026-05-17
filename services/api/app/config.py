@@ -15,6 +15,11 @@ class Settings(BaseSettings):
 
     app_env: Literal["dev", "staging", "prod"] = "dev"
     api_base_url: str = "http://localhost:8000"
+    # URL the Hermes container uses to reach the control plane. Different
+    # from api_base_url because the container's `localhost` is itself, not
+    # the host. On Mac dev: http://host.docker.internal:8000. On Fly: the
+    # internal hostname (e.g. http://aki-api.internal:8000).
+    api_internal_url: str = "http://host.docker.internal:8000"
     web_base_url: str = "http://localhost:3000"   # for OAuth callback redirects
 
     # Safety: the X-Dev-Org-Id auth bypass requires BOTH app_env=dev AND this

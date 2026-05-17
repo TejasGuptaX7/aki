@@ -49,8 +49,10 @@ from docker.errors import NotFound
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import agent_tokens
 from app.config import get_settings
 from app.connectors.materialize import materialize_mcp_servers
+from app.db import session_for_org
 from app.models import Agent
 
 
@@ -163,6 +165,56 @@ def _write_manifest(org_id: UUID, agents: list[Agent]) -> Path:
     return manifest_path
 
 
+async def _ensure_agent_service_token(
+    db: AsyncSession, org_id: UUID, agent: Agent
+) -> str:
+    """Return the plaintext service token for this agent, minting + persisting
+    one if needed.
+
+    Persistence is split across two stores:
+      - sha256 in `agents.service_token_hash` (DB, queryable for auth)
+      - plaintext in `<agent_dir>/.service-token` (host volume, mode 0600,
+        needed because Hermes 0.13 doesn't do env-substitution in
+        mcp_servers headers — we have to write the token into config.yaml
+        verbatim)
+
+    If either is missing or they disagree, we mint a fresh token. The agent's
+    last in-flight MCP call may be authed by a token we just invalidated;
+    that surfaces as a 401 from /agent_internal/mcp and the agent will
+    naturally retry (or the user retries the chat). v1 acceptable; v2 with
+    rotation would deserve a graceful handoff.
+    """
+    agent_dir = _agent_dir(org_id, agent.id)
+    token_file = agent_dir / ".service-token"
+
+    if agent.service_token_hash and token_file.exists():
+        try:
+            plaintext = token_file.read_text().strip()
+        except Exception:
+            plaintext = ""
+        if plaintext and agent_tokens.verify(plaintext, agent.service_token_hash):
+            return plaintext
+
+    # Mint a fresh token. Persist hash to DB in a dedicated session so it's
+    # committed regardless of the caller's transaction lifecycle (the file
+    # write is irreversible — DB lagging behind = next auth 401s).
+    plaintext, hexhash = agent_tokens.mint()
+    from sqlalchemy import update
+    async with session_for_org(org_id) as sdb:
+        await sdb.execute(
+            update(Agent)
+            .where(Agent.id == agent.id)
+            .values(service_token_hash=hexhash)
+        )
+        await sdb.commit()
+    # Reflect in the in-memory copy so the rest of the call sees it.
+    agent.service_token_hash = hexhash
+
+    token_file.write_text(plaintext)
+    token_file.chmod(0o600)
+    return plaintext
+
+
 async def _seed_agent_workspace(
     db: AsyncSession, org_id: UUID, agent: Agent
 ) -> None:
@@ -170,8 +222,9 @@ async def _seed_agent_workspace(
 
     Each Hermes profile loads its config from $HERMES_HOME/config.yaml at
     `hermes -p <agent_id>` start. The mcp_servers dict is materialized from
-    the agent's visible connections (org-wide ∪ per-agent) — see
-    app/connectors/materialize.py for the visibility rules.
+    the agent's visible connections (org-wide ∪ per-agent) plus the always-
+    present `approvals` internal MCP — see app/connectors/materialize.py
+    for the visibility rules.
 
     Hermes 0.13's config schema keys mcp_servers by name (not as a list),
     so we collapse the list to a dict here.
@@ -180,7 +233,10 @@ async def _seed_agent_workspace(
     agent_dir = _agent_dir(org_id, agent.id)
     config_path = agent_dir / "config.yaml"
 
-    server_list = await materialize_mcp_servers(db, org_id, agent.id)
+    token = await _ensure_agent_service_token(db, org_id, agent)
+    server_list = await materialize_mcp_servers(
+        db, org_id, agent.id, agent_service_token=token
+    )
     mcp_servers = {
         entry["name"]: {k: v for k, v in entry.items() if k != "name"}
         for entry in server_list
@@ -196,6 +252,7 @@ async def _seed_agent_workspace(
         "mcp_servers": mcp_servers,
     }
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+    config_path.chmod(0o600)
 
 
 # ─── Container lifecycle ────────────────────────────────────────────────────
