@@ -24,7 +24,9 @@ from app.routes import (
     health,
     me,
     memory,
+    native_mcp,
     notifications,
+    oauth_verifier,
     runs,
     schedules,
     slack,
@@ -122,6 +124,8 @@ app.include_router(chat.router)
 app.include_router(audit.router)
 app.include_router(approvals.router)
 app.include_router(agent_internal.router)
+app.include_router(native_mcp.router)
+app.include_router(oauth_verifier.router)
 app.include_router(memory.router)
 app.include_router(billing.router)
 app.include_router(slack.router)

@@ -15,9 +15,9 @@ The classifier is deliberately conservative: when in doubt, return ASK.
 Better to surface an unnecessary approval prompt than to skip one that
 mattered. The cost of a false negative on TIER_FORBID is much higher.
 
-Real-world tool names from Pipedream / Arcade / browser-harness follow
-patterns like `pipedream_slack_chat_postMessage`, `arcade_gmail_send`,
-or bare names like `navigate`. The regex patterns target the action verb
+Real-world tool names from native handlers / Arcade / browser-harness
+follow patterns like `gmail_send_message`, `arcade_gmail_send`, or bare
+names like `navigate`. The regex patterns target the action verb
 (send, post, charge, withdraw) so they work across provider naming
 conventions.
 """
@@ -139,17 +139,17 @@ def tier_for_tool(name: str) -> Tier:
     """Classify a tool name into one of the three tiers.
 
     `name` is the raw tool name as it appears in the MCP tool catalogue
-    (e.g. `pipedream_slack_chat_postMessage`, `navigate`, `arcade_gmail_send`).
+    (e.g. `gmail_send_message`, `navigate`, `arcade_gmail_send`).
     Match is case-insensitive.
     """
     if not name:
         return Tier.ASK  # malformed = treat as ask, never auto
 
     # Explicit allowlist wins. Compare against the bare name AND the
-    # de-prefixed suffix so `pipedream_gmail_get_message` resolves like
-    # `gmail_get_message`.
+    # de-prefixed suffix so `arcade_gmail_get_message` resolves like
+    # `gmail_get_message`. Native handler names already lack a prefix.
     bare = name.lower()
-    suffix = re.sub(r"^(pipedream|arcade)_", "", bare)
+    suffix = re.sub(r"^(arcade|native)_", "", bare)
     if bare in _EXPLICIT_AUTO or suffix in _EXPLICIT_AUTO:
         return Tier.AUTO
 

@@ -1,14 +1,15 @@
-"""Minimal direct Slack Web API client.
+"""Minimal direct Slack Web API client used by the webhook reply path.
 
-Why this exists: Pipedream Connect's free tier doesn't support custom
-OAuth apps for Slack white-label. To ship Slack-based agent chat without
-upgrading Pipedream, we manage the bot token ourselves and call Slack's
-Web API directly to post replies.
+The agent has its own `slack_post_message` MCP tool (see app/oauth/slack.py)
+that talks to Slack with the per-org token from Connection.config; THIS
+module is the simpler fallback path used by routes/slack.py when we want
+to post a reply on behalf of the agent without going through MCP — e.g.
+the rate-limit-exceeded notice.
 
-When we move to Pipedream Business + custom OAuth apps (or build our
-own Slack OAuth flow), the bot token becomes per-org
-(`connection.config.bot_token`) instead of a single env var. The
-interface stays the same; only the token source changes.
+Token source: SLACK_BOT_TOKEN env var. In multi-tenant deployments this
+is empty and the webhook resolver loads the per-org token directly from
+`Connection.config.access_token` before calling post_message. Single-
+tenant dev / staging keeps the env var as a convenience.
 
 Scope is intentionally tiny — chat.postMessage is the only call the
 agent reply path needs. Add more methods as the product needs them.

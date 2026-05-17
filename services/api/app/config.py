@@ -74,19 +74,35 @@ class Settings(BaseSettings):
     embedding_model: str = "text-embedding-3-small"
     embedding_dims: int = 1536
 
-    # Connectors — Pipedream Connect (primary long-tail API layer).
-    # client_credentials OAuth: backend exchanges (client_id, client_secret)
-    # at /v1/oauth/token for a short-lived JWT, then uses Bearer + X-PD-Environment
-    # on every Connect API call.
-    pipedream_project_id: str | None = None         # proj_xxxxx
-    pipedream_client_id: str | None = None
-    pipedream_client_secret: str | None = None
-    pipedream_environment: Literal["development", "production"] = "development"
-    pipedream_base_url: str = "https://api.pipedream.com"
-
-    # Connectors — Arcade (first-class agent-auth for top-20 tools).
+    # Connectors — Arcade.dev (long-tail SaaS connectors).
+    # The top-5 high-value providers (Gmail, Slack, Notion, Linear, HubSpot)
+    # are handled by native OAuth flows in app/oauth/. Arcade picks up
+    # everything else via its managed MCP gateway.
     arcade_api_key: str | None = None
     arcade_base_url: str = "https://api.arcade.dev"
+    # Dashboard-issued slug for the MCP gateway:
+    # https://api.arcade.dev/mcp/<slug>. Set after creating the gateway in
+    # the Arcade dashboard (Dashboard → MCP Gateways).
+    arcade_mcp_gateway_slug: str | None = None
+    # Shared bearer secret Arcade uses to call our /oauth/arcade/verifier
+    # endpoint. Generate any high-entropy value; paste matching value into
+    # Arcade dashboard → Contextual Access → Webhook auth (bearer).
+    arcade_verifier_token: str | None = None
+
+    # Per-provider OAuth credentials for native handlers (app/oauth/).
+    # Register each app at the provider's developer console; redirect URI is
+    # always ${web_base_url}/connect/oauth/callback (browsers hit this; the
+    # frontend page POSTs the code back to /connections/oauth/callback).
+    gmail_client_id: str | None = None
+    gmail_client_secret: str | None = None
+    notion_client_id: str | None = None
+    notion_client_secret: str | None = None
+    linear_client_id: str | None = None
+    linear_client_secret: str | None = None
+    hubspot_client_id: str | None = None
+    hubspot_client_secret: str | None = None
+    # Slack OAuth (was previously a single-tenant bot token; now per-org).
+    slack_client_secret: str | None = None
 
     # Connectors — self-hosted browser harness (services/browser-harness).
     # See services/browser-harness/PROTOCOL.md for the wire contract.
@@ -97,15 +113,14 @@ class Settings(BaseSettings):
     browser_use_api_key: str | None = None
     browser_use_mcp_base_url: str = "https://api.browser-use.com"
 
-    # Slack — the Aki app (registered at api.slack.com).
-    # While Pipedream Connect free tier doesn't support white-label OAuth,
-    # we use a direct bot token: install Aki to a workspace via api.slack.com
-    # → copy the Bot User OAuth Token → paste here. Same model as a
-    # single-tenant Slack bot. When we eventually flip to Pipedream Business
-    # + custom OAuth apps, this stops being a single token and becomes a
-    # per-org connection.config.bot_token (Pipedream-managed).
+    # Slack — registered at api.slack.com as "Aki".
+    # Production model: per-workspace install via native OAuth (app/oauth/slack.py).
+    # Each org install upserts a Connection whose config carries access_token +
+    # team_id. The env vars below stay as a single-tenant fallback for local
+    # dev (one workspace, no OAuth round-trip needed) and for the webhook
+    # signing secret (which IS app-wide, not per-org).
     slack_signing_secret: str | None = None         # for /webhooks/slack verification
-    slack_bot_token: str | None = None              # xoxb-… for direct chat.postMessage
+    slack_bot_token: str | None = None              # xoxb-… fallback for dev
     slack_client_id: str | None = None
     slack_app_id: str | None = None
 
