@@ -50,7 +50,9 @@ class Settings(BaseSettings):
     # Agent
     hermes_gateway_url: str = "http://localhost:8080"
     hermes_api_key: str | None = None
-    hermes_data_dir: str = "/var/lib/aki/hermes"
+    # Per-org workspace root. Default lives in $HOME so it works on a Mac dev
+    # box; production deploys override to /var/lib/aki/hermes or similar.
+    hermes_data_dir: str = "~/.aki/hermes"
     hermes_idle_minutes: int = 15
     agent_runtime: Literal["local", "railway", "modal"] = "local"
     hermes_model_provider: str = "custom"   # Hermes 0.13 'provider' name
