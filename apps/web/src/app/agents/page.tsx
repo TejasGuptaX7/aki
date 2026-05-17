@@ -2,18 +2,71 @@
 
 import * as React from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { theme } from "@/lib/theme";
 import { AppShell, ErrorBanner, SectionHeader } from "@/components/AppShell";
-import { useAgents, useAuthToken } from "@/lib/agents";
-import { agentsApi, ApiError } from "@/lib/api";
+import { useAgents, useAuthToken, rememberAgent } from "@/lib/agents";
+import { agentsApi, ApiError, AgentTemplate } from "@/lib/api";
 
 export default function AgentsPage() {
+  const router = useRouter();
   const { agents, status, error, refresh } = useAgents();
   const tok = useAuthToken();
   const [creating, setCreating] = React.useState(false);
   const [newName, setNewName] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [pageErr, setPageErr] = React.useState<string | null>(null);
+
+  // Templates — fetched once on mount. The backend list is static enough
+  // that we don't poll. Errors here are non-fatal (we just hide the
+  // gallery and surface to the page banner).
+  const [templates, setTemplates] = React.useState<AgentTemplate[] | null>(null);
+  const [templateBusy, setTemplateBusy] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const list = await agentsApi.listTemplates(tok);
+        if (mounted) setTemplates(list);
+      } catch (e) {
+        // 404 during a backend deploy or pre-shipped state — treat as
+        // "no templates yet" rather than a hard error.
+        if (e instanceof ApiError && (e.status === 404 || e.status === 405)) {
+          if (mounted) setTemplates([]);
+          return;
+        }
+        if (mounted) setPageErr(e instanceof Error ? e.message : String(e));
+      }
+    })();
+    return () => { mounted = false; };
+  }, [tok]);
+
+  // Name-picker modal state for "create from template"
+  const [pickFor, setPickFor] = React.useState<AgentTemplate | null>(null);
+  const [pickName, setPickName] = React.useState("");
+
+  function openTemplatePicker(t: AgentTemplate) {
+    setPickFor(t);
+    setPickName(t.name);
+    setPageErr(null);
+  }
+
+  async function createFromTemplate() {
+    if (!pickFor) return;
+    const name = pickName.trim() || pickFor.name;
+    setTemplateBusy(pickFor.key); setPageErr(null);
+    try {
+      const created = await agentsApi.createFromTemplate(tok, pickFor.key, { name });
+      rememberAgent(created.id);
+      await refresh();
+      setPickFor(null);
+      router.push(`/chat/${created.id}`);
+    } catch (e) {
+      setPageErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTemplateBusy(null);
+    }
+  }
 
   async function create() {
     const name = newName.trim();
@@ -95,7 +148,30 @@ export default function AgentsPage() {
         </div>
       )}
 
+      {templates && templates.length > 0 && (
+        <section style={{ padding: "32px 56px 0" }}>
+          <div style={{
+            fontFamily: theme.mono, fontSize: 11, color: theme.inkFaint,
+            letterSpacing: "0.22em", textTransform: "uppercase", marginBottom: 14,
+          }}>start from a template</div>
+          <div className="aki-template-grid" style={{
+            display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
+            gap: 14,
+          }}>
+            {templates.map((t) => (
+              <TemplateCard key={t.key} template={t}
+                busy={templateBusy === t.key}
+                onPick={() => openTemplatePicker(t)}/>
+            ))}
+          </div>
+        </section>
+      )}
+
       <section style={{ padding: "32px 56px 64px" }}>
+        <div style={{
+          fontFamily: theme.mono, fontSize: 11, color: theme.inkFaint,
+          letterSpacing: "0.22em", textTransform: "uppercase", marginBottom: 14,
+        }}>your agents</div>
         {status === "loading" ? (
           <SkeletonList/>
         ) : agents.length === 0 ? (
@@ -118,6 +194,17 @@ export default function AgentsPage() {
           </div>
         )}
       </section>
+
+      {pickFor && (
+        <TemplateModal
+          template={pickFor}
+          name={pickName}
+          onNameChange={setPickName}
+          busy={templateBusy === pickFor.key}
+          onCancel={() => setPickFor(null)}
+          onConfirm={createFromTemplate}
+        />
+      )}
     </AppShell>
   );
 }
@@ -243,3 +330,129 @@ const dangerBtn: React.CSSProperties = {
   fontFamily: theme.body, fontWeight: 500, fontSize: 13,
   padding: "8px 16px", borderRadius: 999, cursor: "pointer",
 };
+
+function TemplateCard({ template, busy, onPick }: {
+  template: AgentTemplate; busy: boolean; onPick: () => void;
+}) {
+  return (
+    <button
+      onClick={onPick}
+      disabled={busy}
+      style={{
+        textAlign: "left", padding: "22px 22px",
+        background: theme.bgSoft, border: `1px solid ${theme.hair}`,
+        borderRadius: 6, cursor: busy ? "default" : "pointer",
+        display: "flex", flexDirection: "column", gap: 12,
+        opacity: busy ? 0.55 : 1,
+        transition: "border-color 0.15s ease, transform 0.15s ease",
+      }}
+      onMouseEnter={(e) => {
+        if (busy) return;
+        e.currentTarget.style.borderColor = theme.accent;
+      }}
+      onMouseLeave={(e) => {
+        if (busy) return;
+        e.currentTarget.style.borderColor = theme.hair;
+      }}
+    >
+      <div style={{
+        fontFamily: theme.display, fontWeight: 600, fontSize: 22,
+        letterSpacing: "-0.015em", color: theme.ink, lineHeight: 1.15,
+      }}>{template.name}</div>
+      <div style={{
+        fontFamily: theme.body, fontSize: 13, color: theme.inkLede,
+        lineHeight: 1.5, flex: 1,
+      }}>{template.blurb}</div>
+      {template.suggested_tools.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {template.suggested_tools.map((tool) => (
+            <span key={tool} style={{
+              fontFamily: theme.mono, fontSize: 10,
+              padding: "3px 8px", borderRadius: 999,
+              background: "rgba(241,237,224,0.05)",
+              border: `1px solid ${theme.hair}`,
+              color: theme.inkDim, letterSpacing: "0.06em",
+            }}>{tool.replace(/_/g, " ")}</span>
+          ))}
+        </div>
+      )}
+      <div style={{
+        marginTop: 4, fontFamily: theme.mono, fontSize: 10,
+        color: busy ? theme.inkFaint : theme.accent,
+        letterSpacing: "0.18em", textTransform: "uppercase",
+      }}>
+        {busy ? "creating…" : "use this template →"}
+      </div>
+    </button>
+  );
+}
+
+function TemplateModal({ template, name, onNameChange, busy, onCancel, onConfirm }: {
+  template: AgentTemplate;
+  name: string;
+  onNameChange: (next: string) => void;
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div
+      onClick={(e) => { if (e.target === e.currentTarget && !busy) onCancel(); }}
+      style={{
+        position: "fixed", inset: 0, zIndex: 100,
+        background: "rgba(15,16,20,0.72)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        padding: 20,
+      }}
+    >
+      <div style={{
+        background: theme.bg, border: `1px solid ${theme.hair}`,
+        padding: "28px 32px", maxWidth: 480, width: "100%",
+        boxShadow: "0 30px 80px rgba(0,0,0,0.5)",
+      }}>
+        <div style={{
+          fontFamily: theme.mono, fontSize: 10, color: theme.accent,
+          letterSpacing: "0.22em", textTransform: "uppercase", marginBottom: 8,
+        }}>{template.key} · template</div>
+        <h2 style={{
+          margin: 0, fontFamily: theme.display, fontWeight: 600,
+          fontSize: 26, letterSpacing: "-0.015em", color: theme.ink,
+        }}>Name your agent</h2>
+        <p style={{
+          marginTop: 8, marginBottom: 20, fontFamily: theme.body, fontSize: 14,
+          color: theme.inkDim, lineHeight: 1.5,
+        }}>
+          You&rsquo;ll start with the {template.name} brief — edit it any time from the agent detail page.
+        </p>
+
+        <Label>name</Label>
+        <input
+          autoFocus
+          value={name}
+          onChange={(e) => onNameChange(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !busy && name.trim()) onConfirm();
+            if (e.key === "Escape" && !busy) onCancel();
+          }}
+          disabled={busy}
+          style={{ ...inputStyle, marginTop: 8, width: "100%", boxSizing: "border-box" }}
+        />
+
+        <div style={{
+          marginTop: 24, display: "flex", gap: 10, justifyContent: "flex-end",
+        }}>
+          <button onClick={onCancel} disabled={busy} style={secondaryBtn}>
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={busy || !name.trim()}
+            style={{ ...primaryBtn, opacity: busy || !name.trim() ? 0.5 : 1 }}
+          >
+            {busy ? "Creating…" : "Create agent"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
