@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any
 from uuid import UUID, uuid4
 
@@ -52,6 +52,12 @@ router = APIRouter(prefix="/approvals", tags=["approvals"])
 # cut idle connections at 60s.
 WAIT_MAX_S = 60
 WAIT_POLL_INTERVAL_S = 0.5
+
+# How long an approval stays pending before auto-expiring. Mirrors the
+# DB-side server_default; set explicitly here because SQLAlchemy ORM
+# sends NULL when a `Mapped[datetime]` field isn't provided, and the
+# column is NOT NULL.
+DEFAULT_APPROVAL_TTL = timedelta(minutes=10)
 
 
 def _effective_status(a: Approval, now: datetime) -> str:
@@ -175,6 +181,7 @@ async def create_approval(
         args=body.args,
         reason=body.summary,
         status="pending",
+        expires_at=datetime.now(timezone.utc) + DEFAULT_APPROVAL_TTL,
     )
     db.add(row)
     await db.flush()
