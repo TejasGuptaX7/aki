@@ -71,9 +71,11 @@ async def oauth_start(
         raise HTTPException(503, "COMPOSIO_API_KEY not configured")
 
     redirect = f"{settings.api_base_url}/connections/oauth/callback"
+    auth_cfg = auth_config_id_for(provider)
     try:
         link = await get_composio_client().initiate_oauth(
-            principal.organization_id, provider, redirect
+            principal.organization_id, provider, redirect,
+            auth_config_id=auth_cfg,
         )
     except Exception as e:
         log.exception("composio initiate_oauth failed for provider=%s", provider)

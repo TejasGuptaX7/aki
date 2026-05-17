@@ -91,19 +91,22 @@ class ComposioClient:
         user_id: UUID,
         toolkit_slug: str,
         callback_url: str,
+        auth_config_id: str | None = None,
     ) -> OAuthLink:
         """Create an OAuth link scoped to this user's tool_router session.
 
-        Using the session-scoped link endpoint (instead of the legacy
-        /connected_accounts/link) means the resulting connection is visible
-        to the same agent session that COMPOSIO_MANAGE_CONNECTIONS would
-        create. Without this, /connect produces an OAuth grant under our
-        own auth_config but the agent uses Composio's default — they don't
-        link up, agent asks to re-OAuth. See D-fix.
+        Passing `auth_config_id` forces Composio to use OUR registered
+        Slack app (e.g. the branded "Aki" one) instead of falling back to
+        a Composio-managed default. Without it the tool_router silently
+        creates its own managed config — that's why bots installed as
+        "Composio" instead of "Aki" before this fix.
+
+        The session-scoped link (not the legacy /connected_accounts/link)
+        is required so the resulting connection is visible to the same
+        agent session that COMPOSIO_MANAGE_CONNECTIONS would create.
         """
         async with httpx.AsyncClient(timeout=self._timeout) as c:
-            # Resolve the user's tool_router session — idempotent server-side,
-            # so this is cheap and always returns the same trs_ id.
+            # Resolve the user's tool_router session — idempotent server-side.
             sess_r = await c.post(
                 f"{self._base}/api/v3/tool_router/session",
                 headers=self._headers(),
@@ -112,13 +115,17 @@ class ComposioClient:
             sess_r.raise_for_status()
             sid = sess_r.json()["session_id"]
 
+            body: dict[str, Any] = {
+                "toolkit": toolkit_slug,
+                "callback_url": callback_url,
+            }
+            if auth_config_id:
+                body["auth_config_id"] = auth_config_id
+
             r = await c.post(
                 f"{self._base}/api/v3/tool_router/session/{sid}/link",
                 headers=self._headers(),
-                json={
-                    "toolkit": toolkit_slug,
-                    "callback_url": callback_url,
-                },
+                json=body,
             )
             r.raise_for_status()
             d = r.json()
