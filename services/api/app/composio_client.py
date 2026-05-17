@@ -166,6 +166,7 @@ def get_composio_client() -> ComposioClient:
 _AUTH_CONFIG_BY_PROVIDER = {
     "gmail": "composio_gmail_auth_config_id",
     "slack": "composio_slack_auth_config_id",
+    "slackbot": "composio_slackbot_auth_config_id",
 }
 
 

@@ -75,6 +75,7 @@ class Settings(BaseSettings):
     composio_webhook_secret: str | None = None
     composio_gmail_auth_config_id: str | None = None
     composio_slack_auth_config_id: str | None = None
+    composio_slackbot_auth_config_id: str | None = None
 
     # Browser Use Cloud — long-tail no-API tools.
     browser_use_api_key: str | None = None
