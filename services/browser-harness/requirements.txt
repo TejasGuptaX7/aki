@@ -1,0 +1,19 @@
+# Aki browser-harness service runtime deps.
+#
+# Pinned tight on the upstream package (we depend on its private IPC layout in
+# pool.py — every minor bump needs a re-check). aiohttp + boto3 floats within
+# a minor.
+
+# Upstream raw-CDP harness — provides browser_harness.daemon (the per-agent
+# CDP holder) and the IPC primitives in browser_harness._ipc.
+browser-harness==0.1.0
+
+# MCP HTTP transport
+aiohttp>=3.10,<4
+
+# R2/S3 profile persistence
+boto3>=1.35,<2
+
+# Image post-processing for screenshot max_dim downscale (matches upstream
+# helpers.capture_screenshot). Pinned to the same major as upstream.
+pillow>=11,<13

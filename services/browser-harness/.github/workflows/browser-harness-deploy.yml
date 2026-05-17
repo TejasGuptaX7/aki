@@ -1,0 +1,167 @@
+# Build + deploy the browser-harness service to Fly Machines on every push
+# to main that touches services/browser-harness/**.
+#
+# IMPORTANT — GitHub Actions ONLY discovers workflows under `.github/workflows/`
+# at the repo root. This file lives under services/browser-harness/.github/
+# to keep it co-located with the service it ships, but it WILL NOT FIRE
+# from here. The repo's integrator needs to:
+#
+#   ln -s ../../services/browser-harness/.github/workflows/browser-harness-deploy.yml \
+#         .github/workflows/browser-harness-deploy.yml
+#
+# (or copy the file). The README's "Deployment" section spells this out.
+#
+# Required GH secrets:
+#   FLY_API_TOKEN          — `flyctl auth token`
+#   SLACK_DEPLOY_WEBHOOK   — Slack Incoming Webhook URL for failure notifs
+#
+# GHCR auth uses the workflow's GITHUB_TOKEN with `packages: write` — no
+# manual PAT setup needed beyond enabling GHCR for the repo.
+
+name: browser-harness deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "services/browser-harness/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+concurrency:
+  group: browser-harness-deploy
+  cancel-in-progress: false
+
+env:
+  FLY_APP: aki-browser-harness
+  IMAGE: ghcr.io/${{ github.repository_owner }}/aki-browser-harness
+
+jobs:
+  build-and-deploy:
+    name: build + push + fly deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: tags
+        run: |
+          set -euo pipefail
+          SHA="${{ github.sha }}"
+          SHORT="${SHA:0:12}"
+          {
+            echo "sha=$SHA"
+            echo "short=$SHORT"
+            echo "tag_sha=${IMAGE}:sha-${SHORT}"
+            echo "tag_latest=${IMAGE}:latest"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: services/browser-harness
+          file: services/browser-harness/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.tags.outputs.tag_sha }}
+            ${{ steps.tags.outputs.tag_latest }}
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max
+          # The Dockerfile only supports linux/amd64 today (chromium for
+          # arm64 needs a separate apt source). Fly Machines are amd64.
+          platforms: linux/amd64
+
+      - name: Install flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Verify Fly app exists
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          if ! flyctl status --app "$FLY_APP" >/dev/null 2>&1; then
+            echo "Fly app '$FLY_APP' not found. Create it with:"
+            echo "  flyctl apps create $FLY_APP"
+            echo "Then set secrets per fly.toml header and create per-region volumes."
+            exit 1
+          fi
+
+      - name: Deploy to Fly
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        working-directory: services/browser-harness
+        run: |
+          set -euo pipefail
+          flyctl deploy \
+            --app "$FLY_APP" \
+            --image "${{ steps.tags.outputs.tag_sha }}" \
+            --strategy rolling \
+            --wait-timeout 10m \
+            --verbose
+
+      - name: Post-deploy smoke
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          BROWSER_HARNESS_URL: https://${{ env.FLY_APP }}.fly.dev
+          BROWSER_HARNESS_API_KEY: ${{ secrets.BROWSER_HARNESS_API_KEY_PROD }}
+        run: |
+          set -euo pipefail
+          # 30s grace for the new machine's healthcheck to flip green;
+          # flyctl deploy --wait-timeout above already waits, but the
+          # public route can lag the internal healthcheck by a few seconds.
+          for i in 1 2 3 4 5 6; do
+            if curl -fsS "$BROWSER_HARNESS_URL/healthz" >/dev/null; then
+              break
+            fi
+            sleep 5
+          done
+          # Use the script we ship — single source of truth for what
+          # counts as a passing smoke.
+          bash services/browser-harness/scripts/smoke-test-prod.sh
+
+  notify-failure:
+    name: notify slack on failure
+    needs: build-and-deploy
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Slack notify
+        env:
+          WEBHOOK: ${{ secrets.SLACK_DEPLOY_WEBHOOK }}
+        run: |
+          set -euo pipefail
+          if [ -z "${WEBHOOK:-}" ]; then
+            echo "SLACK_DEPLOY_WEBHOOK not set — skipping notification"
+            exit 0
+          fi
+          payload=$(cat <<EOF
+          {
+            "text": ":rotating_light: browser-harness deploy failed",
+            "blocks": [
+              {"type": "section", "text": {"type": "mrkdwn", "text": "*browser-harness deploy failed*"}},
+              {"type": "section", "fields": [
+                {"type": "mrkdwn", "text": "*Commit:*\n<${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}|${{ github.sha }}>"},
+                {"type": "mrkdwn", "text": "*Run:*\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|#${{ github.run_number }}>"}
+              ]}
+            ]
+          }
+          EOF
+          )
+          curl -fsS -X POST -H "Content-Type: application/json" \
+            -d "$payload" "$WEBHOOK"

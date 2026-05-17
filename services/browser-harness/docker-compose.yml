@@ -1,0 +1,88 @@
+# Local dev stack for services/browser-harness.
+#
+#   docker compose up --build
+#   curl localhost:7900/healthz
+#
+# Brings up:
+#   - browser-harness: the Aki harness service (Chromium pool + MCP HTTP)
+#   - minio: R2-compatible object store for the per-agent profile blobs
+#   - minio-setup: one-shot job that creates the bucket on first up
+
+services:
+  browser-harness:
+    build: .
+    image: aki-browser-harness:0.1.0
+    ports:
+      - "7900:7900"
+    environment:
+      BROWSER_HARNESS_API_KEY: ${BROWSER_HARNESS_API_KEY:-dev-secret-change-me}
+      # Use minio as the R2 emulator
+      BROWSER_HARNESS_R2_ENDPOINT: http://minio:9000
+      BROWSER_HARNESS_R2_ACCESS_KEY: ${MINIO_ROOT_USER:-aki}
+      BROWSER_HARNESS_R2_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-aki-dev-secret}
+      BROWSER_HARNESS_R2_BUCKET: aki-browser-profiles
+      BROWSER_HARNESS_R2_REGION: us-east-1
+      # SSRF allowlist — keep empty in dev (the smoke test hits public google).
+      BROWSER_HARNESS_ALLOWED_HOSTS: ""
+      # Generous session timeouts for interactive dev.
+      BROWSER_HARNESS_IDLE_SECONDS: "600"
+      BROWSER_HARNESS_HARD_MAX_SECONDS: "1800"
+      LOG_LEVEL: INFO
+    volumes:
+      - ./skills:/var/lib/aki/browser-harness/skills:rw
+      - browser-profiles:/var/lib/aki/browser-profiles
+    # Container resource caps — example values; tune per-deploy.
+    # `shm_size` matters because Chromium uses /dev/shm by default (we pass
+    # --disable-dev-shm-usage but bump it anyway as a belt-and-braces).
+    shm_size: "512m"
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: "2.0"
+    depends_on:
+      minio-setup:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7900/healthz"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-aki}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-aki-dev-secret}
+    ports:
+      - "9000:9000"     # S3 API
+      - "9001:9001"     # Web console
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  minio-setup:
+    image: minio/mc:latest
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set aki http://minio:9000 ${MINIO_ROOT_USER:-aki} ${MINIO_ROOT_PASSWORD:-aki-dev-secret}; do
+        echo waiting for minio; sleep 1;
+      done;
+      mc mb --ignore-existing aki/aki-browser-profiles;
+      echo bucket ready;
+      "
+    depends_on:
+      minio:
+        condition: service_healthy
+
+volumes:
+  browser-profiles:
+  minio-data:
