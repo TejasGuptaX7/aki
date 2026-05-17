@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
+import * as Sentry from "@sentry/nextjs";
 import { theme } from "@/lib/theme";
 
 /**
@@ -15,8 +16,10 @@ export default function GlobalError({ error, reset }: {
   reset: () => void;
 }) {
   React.useEffect(() => {
-    // Real error reporting (Sentry, etc.) would go here when we wire it.
-    // For now, keep the digest visible so support can correlate with logs.
+    Sentry.captureException(error, {
+      tags: { source: "next-global-error" },
+      extra: { digest: error.digest ?? null },
+    });
   }, [error]);
 
   return (
