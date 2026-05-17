@@ -22,6 +22,7 @@ from app.routes import (
     connections,
     health,
     me,
+    memory,
     slack,
     webhooks,
 )
@@ -107,4 +108,5 @@ app.include_router(chat.router)
 app.include_router(audit.router)
 app.include_router(approvals.router)
 app.include_router(agent_internal.router)
+app.include_router(memory.router)
 app.include_router(slack.router)

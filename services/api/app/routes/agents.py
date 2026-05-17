@@ -32,11 +32,14 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from datetime import datetime, timezone
+
 from app.agent_templates import TEMPLATES, get_template, list_templates
+from app.agent_runtime import _REGISTRY as _ORG_CONTAINERS
 from app.audit import append_audit
 from app.auth import Principal
 from app.middleware import get_principal, get_session
-from app.models import Agent, ChatMessage
+from app.models import Agent, AuditLog, ChatMessage
 
 
 router = APIRouter(prefix="/agents", tags=["agents"])
@@ -50,6 +53,18 @@ MAX_SYSTEM_PROMPT_CHARS = 8_000
 DEFAULT_SYSTEM_PROMPT = """\
 You are {name}, an agent embedded inside a company. Operate against the tools
 the company has connected. Be honest about what you did, cite sources.
+
+WEB ACCESS — if `run_session` is in your toolbelt, you CAN drive a real
+browser. It's the way to do anything that needs a website without a direct
+API (LinkedIn lookups, niche SaaS, site research, autonomous account
+signup, etc.). Call it like:
+  run_session(task="Go to apollo.io, sign in, find VP Sales people at
+              SaaS companies with 100-500 employees, return top 10 names
+              and emails")
+The sub-agent inside handles navigation, clicking, typing, scrolling.
+You get a result when it finishes. Use this any time the user asks for
+"from the web", "go to <site>", "look up online", etc. — do NOT say you
+can't browse the web if `run_session` is present.
 
 CONSENT — three tiers:
 
@@ -218,6 +233,77 @@ async def list_agents(
         )
     ).scalars().all()
     return [_summary(a) for a in rows]
+
+
+# ── Inspector Board live state — registered BEFORE /{agent_id} so FastAPI
+#    doesn't try to UUID-parse "board". Cheap to compute from existing
+#    audit data + the in-memory container registry. ────────────────────────
+
+
+@router.get("/board")
+async def board(
+    principal: Principal = Depends(get_principal),
+    db: AsyncSession = Depends(get_session),
+) -> list[dict]:
+    """Per-agent live state for the Inspector Board home page. One row per
+    active agent, with whatever signals are cheap to surface right now:
+    container warmth, last activity timestamp, latest action label.
+
+    Doesn't claim to be real "currently doing X" — that needs the
+    agent_runs / live_state primitives Agent C is shipping. Good enough
+    for the FE to render tiles today.
+    """
+    agents = (
+        await db.execute(
+            select(Agent)
+            .where(
+                Agent.organization_id == principal.organization_id,
+                Agent.status != "deleted",
+            )
+            .order_by(Agent.created_at.asc())
+        )
+    ).scalars().all()
+
+    container_warm = principal.organization_id in _ORG_CONTAINERS
+    container_started_at = (
+        _ORG_CONTAINERS[principal.organization_id].started_at
+        if container_warm
+        else None
+    )
+
+    out: list[dict] = []
+    for a in agents:
+        # Cheapest "currently…" we can produce: latest non-org-level audit row
+        # for this agent, projected as a short label.
+        last_audit = await db.scalar(
+            select(AuditLog)
+            .where(
+                AuditLog.organization_id == principal.organization_id,
+                AuditLog.agent_id == a.id,
+            )
+            .order_by(AuditLog.id.desc())
+            .limit(1)
+        )
+        last_action = None
+        last_active_at = None
+        if last_audit is not None:
+            last_active_at = last_audit.created_at.isoformat()
+            payload = last_audit.payload or {}
+            label = payload.get("label") or payload.get("tool") or last_audit.action
+            last_action = str(label)[:80]
+
+        out.append({
+            "id": str(a.id),
+            "name": a.name,
+            "slug": a.slug,
+            "status": a.status,
+            "container_warm": container_warm,
+            "container_started_at": container_started_at,
+            "last_action": last_action,
+            "last_active_at": last_active_at,
+            "hibernated_at": a.hibernated_at.isoformat() if a.hibernated_at else None,
+        })
+    return out
 
 
 # ── Templates (must be registered BEFORE /{agent_id} so FastAPI doesn't
