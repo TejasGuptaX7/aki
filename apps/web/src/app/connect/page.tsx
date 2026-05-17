@@ -5,26 +5,50 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { theme } from "@/lib/theme";
 import { AppShell, ErrorBanner, SectionHeader } from "@/components/AppShell";
 import { useAgents, useAuthToken } from "@/lib/agents";
-import { connectionsApi, Connection, PipedreamConnectToken } from "@/lib/api";
+import { connectionsApi, Connection } from "@/lib/api";
 
 const ORG_SCOPE = "__org__";
+const ARCADE_PENDING_KEY = "aki.arcade.pending";
 
-type CatalogItem = {
-  /** Stable id for "already connected" matching. For Pipedream, this is
-   *  the app_slug we send back to /pipedream/record. For browser, it's "browser". */
+type NativeProvider = "gmail" | "slack" | "notion" | "linear" | "hubspot";
+
+type CatalogItem =
+  | {
+      kind: "native";
+      provider: NativeProvider;
+      name: string;
+      blurb: string;
+      glyph: React.ReactNode;
+    }
+  | {
+      kind: "browser";
+      provider: "browser";
+      name: string;
+      blurb: string;
+      glyph: React.ReactNode;
+    }
+  | {
+      kind: "arcade";
+      /** Arcade auth-provider id (dashboard slug). Also used as the
+       *  Connection.provider value the backend stores. */
+      provider: string;
+      name: string;
+      blurb: string;
+      glyph: React.ReactNode;
+      scopes?: string[];
+    };
+
+type ArcadePending = {
+  authId: string;
   provider: string;
-  /** Pipedream app slug if kind === "pipedream". May equal provider. */
-  appSlug?: string;
-  name: string;
-  blurb: string;
-  kind: "pipedream" | "browser";
-  glyph: React.ReactNode;
+  agentId: string | null;
+  startedAt: number;
 };
 
 export default function ConnectPage() {
   return (
     <React.Suspense fallback={null}>
-      <ConnectPageInner/>
+      <ConnectPageInner />
     </React.Suspense>
   );
 }
@@ -60,52 +84,53 @@ function ConnectPageInner() {
     }
   }, [tok, scope]);
 
-  React.useEffect(() => { fetchConns(); }, [fetchConns]);
+  React.useEffect(() => {
+    fetchConns();
+  }, [fetchConns]);
 
-  // Fallback redirect path: if Pipedream's hosted flow sent us back
-  // with account params (or just sessionStorage-pending state), close
-  // the loop by POSTing /pipedream/record. The SDK path returns
-  // synchronously and never lands here.
+  // Arcade redirect resolution. Arcade's hosted flow lands us back at
+  // /connect?arcade=ok. We pull the pending auth_id from sessionStorage,
+  // poll status once, then record. The backend re-fetches status server-side
+  // so we don't need to trust anything but the auth_id we set ourselves.
   React.useEffect(() => {
     if (typeof window === "undefined") return;
-    const pending = sessionStorage.getItem("aki.pipedream.pending");
-    if (!pending) return;
-    let parsed: { appSlug: string; externalUserId: string; agentId: string | null; startedAt: number };
+    if (search?.get("arcade") !== "ok") return;
+    const raw = sessionStorage.getItem(ARCADE_PENDING_KEY);
+    if (!raw) return;
+    let pending: ArcadePending;
     try {
-      parsed = JSON.parse(pending);
+      pending = JSON.parse(raw) as ArcadePending;
     } catch {
-      sessionStorage.removeItem("aki.pipedream.pending");
+      sessionStorage.removeItem(ARCADE_PENDING_KEY);
       return;
     }
-    // Pipedream's hosted redirect typically appends account_id; we accept
-    // a few naming variants defensively. If none of them appear we still
-    // clear the pending state to avoid a stuck modal next page-load.
-    const accountId = search?.get("account_id")
-      ?? search?.get("pd_account_id")
-      ?? search?.get("connected_account_id");
-    sessionStorage.removeItem("aki.pipedream.pending");
-    if (!accountId) return;
+    sessionStorage.removeItem(ARCADE_PENDING_KEY);
     (async () => {
+      setBusy(pending.provider);
       try {
-        await connectionsApi.pipedreamRecord(tok, {
-          account_id: accountId,
-          app_slug: parsed.appSlug,
-          external_user_id: parsed.externalUserId,
-          agent_id: parsed.agentId,
+        // One short-poll in case Arcade is still finalizing.
+        const s = await connectionsApi.arcadeStatus(tok, pending.authId, 10);
+        if (s.status !== "completed") {
+          throw new Error(`Arcade auth ${s.status ?? "incomplete"}`);
+        }
+        await connectionsApi.arcadeRecord(tok, {
+          auth_id: pending.authId,
+          agent_id: pending.agentId,
         });
         setOk(true);
         await fetchConns();
-        // Strip the pd_* params from the URL so refreshes don't re-record.
-        const params = new URLSearchParams(search?.toString() ?? "");
-        ["account_id", "pd_account_id", "connected_account_id"].forEach((k) => params.delete(k));
-        const qs = params.toString();
-        router.replace(`/connect${qs ? `?${qs}` : ""}`);
       } catch (e) {
         setErr(e instanceof Error ? e.message : String(e));
+      } finally {
+        setBusy(null);
+        const params = new URLSearchParams(search?.toString() ?? "");
+        params.delete("arcade");
+        const qs = params.toString();
+        router.replace(`/connect${qs ? `?${qs}` : ""}`);
       }
     })();
-  // We only want this to run once on mount — search/tok/fetchConns are stable enough.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Run-once on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function setScopeAndPushUrl(next: string) {
@@ -119,7 +144,8 @@ function ConnectPageInner() {
   }
 
   async function connect(item: CatalogItem) {
-    setBusy(item.provider); setErr(null);
+    setBusy(item.provider);
+    setErr(null);
     const agentArg = attachTo === ORG_SCOPE ? undefined : attachTo;
     try {
       if (item.kind === "browser") {
@@ -128,24 +154,46 @@ function ConnectPageInner() {
         setBusy(null);
         return;
       }
-      if (item.kind === "pipedream") {
-        await connectViaPipedream({
-          appSlug: item.appSlug ?? item.provider,
-          agentId: agentArg,
-          tok,
-          onDone: async () => {
+      if (item.kind === "native") {
+        const resp = await connectionsApi.oauthStart(tok, item.provider, agentArg);
+        // The provider's redirect_uri points back to /connect/oauth/callback;
+        // that page POSTs code+state to /connections/oauth/callback and
+        // sends the user back here. No sessionStorage needed — state is
+        // signed server-side.
+        window.location.href = resp.auth_url;
+        return;
+      }
+      if (item.kind === "arcade") {
+        const resp = await connectionsApi.arcadeStart(tok, {
+          provider: item.provider,
+          agent_id: agentArg ?? null,
+          scopes: item.scopes,
+        });
+        const pending: ArcadePending = {
+          authId: resp.auth_id,
+          provider: item.provider,
+          agentId: agentArg ?? null,
+          startedAt: Date.now(),
+        };
+        sessionStorage.setItem(ARCADE_PENDING_KEY, JSON.stringify(pending));
+        if (!resp.auth_url) {
+          // Already authorized server-side — short-circuit straight to record.
+          try {
+            await connectionsApi.arcadeRecord(tok, {
+              auth_id: resp.auth_id,
+              agent_id: agentArg ?? null,
+            });
+            sessionStorage.removeItem(ARCADE_PENDING_KEY);
             setOk(true);
             await fetchConns();
+          } catch (e) {
+            setErr(e instanceof Error ? e.message : String(e));
+          } finally {
             setBusy(null);
-          },
-          onError: (msg) => {
-            setErr(msg);
-            setBusy(null);
-          },
-          onCancelled: () => {
-            setBusy(null);
-          },
-        });
+          }
+          return;
+        }
+        window.location.href = resp.auth_url;
         return;
       }
     } catch (e: unknown) {
@@ -166,51 +214,80 @@ function ConnectPageInner() {
     }
   }
 
-  const catalog = CATALOG;
-
   const active = (conns ?? []).filter((c) => c.status === "active");
   const orgWide = active.filter((c) => c.agent_id === null);
   const perAgent = active.filter((c) => c.agent_id !== null);
 
   function alreadyConnected(provider: string): boolean {
     if (attachTo === ORG_SCOPE) return orgWide.some((c) => c.provider === provider);
-    return active.some((c) => c.provider === provider && (c.agent_id === null || c.agent_id === attachTo));
+    return active.some(
+      (c) => c.provider === provider && (c.agent_id === null || c.agent_id === attachTo),
+    );
   }
 
-  const scopedAgentName = scope === ORG_SCOPE
-    ? "All agents (org-wide)"
-    : agents.find((a) => a.id === scope)?.name ?? "…";
+  const scopedAgentName =
+    scope === ORG_SCOPE
+      ? "All agents (org-wide)"
+      : agents.find((a) => a.id === scope)?.name ?? "…";
 
   return (
     <AppShell>
       <SectionHeader
         kicker="/01 · connections"
-        title={<>Connect a tool. <em style={{ fontStyle: "italic", fontWeight: 500 }}>The agent does the rest.</em></>}
-        lede="OAuth runs through Pipedream's hosted flow, white-labeled to Aki. We never see your password. Tokens are stored encrypted per-org."
+        title={
+          <>
+            Connect a tool. <em style={{ fontStyle: "italic", fontWeight: 500 }}>The agent does the rest.</em>
+          </>
+        }
+        lede="Top tools use our own OAuth — your tokens land directly in our vault, no middleman. Long-tail apps route through Arcade. We never see your password."
       />
 
       {err && <ErrorBanner>{err}</ErrorBanner>}
       {ok && !err && (
-        <div style={{
-          margin: "16px 56px", padding: "10px 18px",
-          background: "rgba(197,236,79,0.08)", border: `1px solid ${theme.accentDim}`,
-          color: theme.accent, fontFamily: theme.mono, fontSize: 12,
-          display: "flex", justifyContent: "space-between", alignItems: "center",
-        }}>
+        <div
+          style={{
+            margin: "16px 56px",
+            padding: "10px 18px",
+            background: "rgba(197,236,79,0.08)",
+            border: `1px solid ${theme.accentDim}`,
+            color: theme.accent,
+            fontFamily: theme.mono,
+            fontSize: 12,
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+          }}
+        >
           <span>connected · ready to use</span>
-          <button onClick={() => setOk(false)} style={{
-            background: "transparent", border: "none", color: theme.inkDim,
-            fontFamily: theme.mono, fontSize: 12, cursor: "pointer",
-          }}>dismiss</button>
+          <button
+            onClick={() => setOk(false)}
+            style={{
+              background: "transparent",
+              border: "none",
+              color: theme.inkDim,
+              fontFamily: theme.mono,
+              fontSize: 12,
+              cursor: "pointer",
+            }}
+          >
+            dismiss
+          </button>
         </div>
       )}
 
       <section style={{ padding: "32px 56px 0" }}>
         <Kicker>viewing</Kicker>
-        <div style={{
-          display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap",
-          padding: "14px 18px", background: theme.bgSoft, border: `1px solid ${theme.hair}`,
-        }}>
+        <div
+          style={{
+            display: "flex",
+            gap: 12,
+            alignItems: "center",
+            flexWrap: "wrap",
+            padding: "14px 18px",
+            background: theme.bgSoft,
+            border: `1px solid ${theme.hair}`,
+          }}
+        >
           <span style={{ fontFamily: theme.body, fontSize: 13, color: theme.inkDim }}>
             Show connections for
           </span>
@@ -220,15 +297,24 @@ function ConnectPageInner() {
             style={selectStyle}
           >
             <option value={ORG_SCOPE}>All agents (org-wide)</option>
-            {agents.filter((a) => a.status === "active").map((a) => (
-              <option key={a.id} value={a.id}>Only for {a.name}</option>
-            ))}
+            {agents
+              .filter((a) => a.status === "active")
+              .map((a) => (
+                <option key={a.id} value={a.id}>
+                  Only for {a.name}
+                </option>
+              ))}
           </select>
-          <span style={{ flex: 1 }}/>
-          <span style={{
-            fontFamily: theme.mono, fontSize: 10, color: theme.inkFaint,
-            letterSpacing: "0.18em", textTransform: "uppercase",
-          }}>
+          <span style={{ flex: 1 }} />
+          <span
+            style={{
+              fontFamily: theme.mono,
+              fontSize: 10,
+              color: theme.inkFaint,
+              letterSpacing: "0.18em",
+              textTransform: "uppercase",
+            }}
+          >
             new connections attach to: {scopedAgentName}
           </span>
         </div>
@@ -237,7 +323,11 @@ function ConnectPageInner() {
       <section style={{ padding: "32px 56px 0" }}>
         <Kicker>active · {active.length}</Kicker>
         {conns === null ? (
-          <CardGrid>{[0,1,2].map((i) => <SkeletonCard key={i}/>)}</CardGrid>
+          <CardGrid>
+            {[0, 1, 2].map((i) => (
+              <SkeletonCard key={i} />
+            ))}
+          </CardGrid>
         ) : active.length === 0 ? (
           <EmptyState>Nothing yet for this scope. Pick a tool below.</EmptyState>
         ) : (
@@ -245,19 +335,26 @@ function ConnectPageInner() {
             {orgWide.length > 0 && (
               <ConnGroup label={`shared with all agents · ${orgWide.length}`}>
                 {orgWide.map((c) => (
-                  <ActiveCard key={c.id} conn={c} agentName={null}
+                  <ActiveCard
+                    key={c.id}
+                    conn={c}
+                    agentName={null}
                     onDisable={c.provider === "browser" ? () => disable(c) : undefined}
-                    busy={busy === c.id}/>
+                    busy={busy === c.id}
+                  />
                 ))}
               </ConnGroup>
             )}
             {perAgent.length > 0 && (
               <ConnGroup label={`per-agent · ${perAgent.length}`}>
                 {perAgent.map((c) => (
-                  <ActiveCard key={c.id} conn={c}
+                  <ActiveCard
+                    key={c.id}
+                    conn={c}
                     agentName={agents.find((a) => a.id === c.agent_id)?.name ?? "(unknown agent)"}
                     onDisable={c.provider === "browser" ? () => disable(c) : undefined}
-                    busy={busy === c.id}/>
+                    busy={busy === c.id}
+                  />
                 ))}
               </ConnGroup>
             )}
@@ -265,16 +362,62 @@ function ConnectPageInner() {
         )}
       </section>
 
-      <section style={{ padding: "32px 56px 64px" }}>
-        <Kicker>available</Kicker>
+      <section style={{ padding: "32px 56px 0" }}>
+        <Kicker>native · our own oauth</Kicker>
         <CardGrid>
-          {catalog.map((item) => {
+          {NATIVE_CATALOG.map((item) => {
             const already = alreadyConnected(item.provider);
             return (
-              <CatalogCardEl key={item.provider} item={item} already={already}
+              <CatalogCardEl
+                key={item.provider}
+                item={item}
+                already={already}
                 attachToName={scopedAgentName}
                 busy={busy === item.provider}
-                onConnect={() => connect(item)}/>
+                onConnect={() => connect(item)}
+              />
+            );
+          })}
+          <CatalogCardEl
+            key={BROWSER_ITEM.provider}
+            item={BROWSER_ITEM}
+            already={alreadyConnected(BROWSER_ITEM.provider)}
+            attachToName={scopedAgentName}
+            busy={busy === BROWSER_ITEM.provider}
+            onConnect={() => connect(BROWSER_ITEM)}
+          />
+        </CardGrid>
+      </section>
+
+      <section style={{ padding: "32px 56px 64px" }}>
+        <Kicker>other · via arcade</Kicker>
+        <div
+          style={{
+            fontFamily: theme.body,
+            fontSize: 13,
+            color: theme.inkDim,
+            marginTop: -10,
+            marginBottom: 18,
+            maxWidth: 640,
+            lineHeight: 1.55,
+          }}
+        >
+          Long-tail SaaS we route through Arcade&apos;s managed OAuth gateway. Same
+          per-org / per-agent scoping, same encrypted storage — just a different
+          token issuer on the back end.
+        </div>
+        <CardGrid>
+          {ARCADE_CATALOG.map((item) => {
+            const already = alreadyConnected(item.provider);
+            return (
+              <CatalogCardEl
+                key={item.provider}
+                item={item}
+                already={already}
+                attachToName={scopedAgentName}
+                busy={busy === item.provider}
+                onConnect={() => connect(item)}
+              />
             );
           })}
         </CardGrid>
@@ -283,143 +426,151 @@ function ConnectPageInner() {
   );
 }
 
-// ─── pipedream connect flow ───────────────────────────────────────────
-//
-// Two paths:
-// 1. SDK iframe modal — `client.connectAccount({ token, app, onSuccess })`.
-//    User stays on /connect; we get an `id` back synchronously through the
-//    callback and post it to /pipedream/record.
-// 2. Fallback hosted redirect — `window.location.href = connect_link_url`.
-//    Used if the SDK fails to import (CSP issue, blocked iframe, etc.).
-//    In this case the backend's success_redirect_uri lands the user back
-//    on /connect?pd_account_id=…&pd_app=… and we record on mount.
-async function connectViaPipedream({ appSlug, agentId, tok, onDone, onError, onCancelled }: {
-  appSlug: string;
-  agentId?: string;
-  tok: () => Promise<string | null>;
-  onDone: () => Promise<void> | void;
-  onError: (msg: string) => void;
-  onCancelled: () => void;
-}) {
-  let tokenResp: PipedreamConnectToken;
-  try {
-    tokenResp = await connectionsApi.pipedreamConnectToken(tok, agentId);
-  } catch (e) {
-    onError(e instanceof Error ? e.message : String(e));
-    return;
-  }
+// ─── catalogs ──────────────────────────────────────────────────────────
 
-  // Try the SDK first — it's a better UX (stays in-page).
-  try {
-    const mod = await import("@pipedream/sdk/browser");
-    const client = mod.createFrontendClient({
-      externalUserId: tokenResp.external_user_id,
-      projectId: tokenResp.project_id,
-      projectEnvironment: tokenResp.environment,
-      tokenCallback: async () => ({
-        token: tokenResp.token,
-        expiresAt: new Date(tokenResp.expires_at),
-        connectLinkUrl: tokenResp.connect_link_url,
-      }),
-    });
-
-    let settled = false;
-
-    await client.connectAccount({
-      app: appSlug,
-      token: tokenResp.token,
-      onSuccess: async ({ id }) => {
-        if (settled) return;
-        settled = true;
-        try {
-          await connectionsApi.pipedreamRecord(tok, {
-            account_id: id,
-            app_slug: appSlug,
-            external_user_id: tokenResp.external_user_id,
-            agent_id: tokenResp.agent_id,
-          });
-          await onDone();
-        } catch (e) {
-          onError(e instanceof Error ? e.message : String(e));
-        }
-      },
-      onError: (err) => {
-        if (settled) return;
-        settled = true;
-        onError(err.message);
-      },
-      onClose: (status) => {
-        if (settled) return;
-        if (!status.successful) {
-          settled = true;
-          onCancelled();
-        }
-      },
-    });
-    return;
-  } catch (sdkErr) {
-    // SDK import or modal failed — fall back to hosted redirect.
-    if (typeof window !== "undefined" && tokenResp.connect_link_url) {
-      sessionStorage.setItem("aki.pipedream.pending", JSON.stringify({
-        appSlug,
-        externalUserId: tokenResp.external_user_id,
-        agentId: tokenResp.agent_id,
-        startedAt: Date.now(),
-      }));
-      window.location.href = tokenResp.connect_link_url;
-      return;
-    }
-    onError(sdkErr instanceof Error ? sdkErr.message : String(sdkErr));
-  }
-}
-
-const CATALOG: CatalogItem[] = [
-  // Pipedream's `slack` app is user-OAuth (acts as the human). We use the
-  // bot variant exclusively so agent posts come from "Aki", not from the
-  // installer. If `slack_bot` ever gets renamed in Pipedream's catalog,
-  // this is the one string to change.
-  { provider: "slack_bot", appSlug: "slack_bot", name: "Slack (as a bot)", kind: "pipedream",
-    blurb: "Installs Aki as a workspace bot — messages come from Aki, not from you.",
-    glyph: <ProviderGlyph color="#611f69">S</ProviderGlyph> },
-  { provider: "gmail", appSlug: "gmail", name: "Gmail", kind: "pipedream",
+const NATIVE_CATALOG: CatalogItem[] = [
+  {
+    kind: "native",
+    provider: "gmail",
+    name: "Gmail",
     blurb: "Read, draft, send, label, and search.",
-    glyph: <ProviderGlyph color="#ea4335">M</ProviderGlyph> },
-  { provider: "google_calendar", appSlug: "google_calendar", name: "Google Calendar", kind: "pipedream",
-    blurb: "Read availability, create and update events.",
-    glyph: <ProviderGlyph color="#4285f4">C</ProviderGlyph> },
-  { provider: "github", appSlug: "github", name: "GitHub", kind: "pipedream",
-    blurb: "Read repos, comment on PRs and issues, manage labels.",
-    glyph: <ProviderGlyph color="#e3dcc5">G</ProviderGlyph> },
-  { provider: "linear", appSlug: "linear", name: "Linear", kind: "pipedream",
-    blurb: "Read, comment, and transition issues across teams.",
-    glyph: <ProviderGlyph color="#5e6ad2">L</ProviderGlyph> },
-  { provider: "notion", appSlug: "notion", name: "Notion", kind: "pipedream",
+    glyph: <ProviderGlyph color="#ea4335">M</ProviderGlyph>,
+  },
+  {
+    kind: "native",
+    provider: "slack",
+    name: "Slack",
+    blurb: "Post messages, list channels, read threads.",
+    glyph: <ProviderGlyph color="#611f69">S</ProviderGlyph>,
+  },
+  {
+    kind: "native",
+    provider: "notion",
+    name: "Notion",
     blurb: "Read pages, create entries in selected databases.",
-    glyph: <ProviderGlyph color="#e3dcc5">N</ProviderGlyph> },
-  { provider: "hubspot", appSlug: "hubspot", name: "HubSpot", kind: "pipedream",
+    glyph: <ProviderGlyph color="#e3dcc5">N</ProviderGlyph>,
+  },
+  {
+    kind: "native",
+    provider: "linear",
+    name: "Linear",
+    blurb: "Read, comment, and transition issues across teams.",
+    glyph: <ProviderGlyph color="#5e6ad2">L</ProviderGlyph>,
+  },
+  {
+    kind: "native",
+    provider: "hubspot",
+    name: "HubSpot",
     blurb: "Read and create contacts, log activity, manage deals.",
-    glyph: <ProviderGlyph color="#ff7a59">H</ProviderGlyph> },
-  { provider: "browser", name: "Browser Mode", kind: "browser",
-    blurb: "For any tool without an API — Aki drives a real Chrome via Browser Use.",
-    glyph: <ProviderGlyph color={theme.accent}>↗</ProviderGlyph> },
+    glyph: <ProviderGlyph color="#ff7a59">H</ProviderGlyph>,
+  },
 ];
+
+const BROWSER_ITEM: CatalogItem = {
+  kind: "browser",
+  provider: "browser",
+  name: "Browser Mode",
+  blurb: "For any tool without an API — Aki drives a real Chrome via Browser Use.",
+  glyph: <ProviderGlyph color={theme.accent}>↗</ProviderGlyph>,
+};
+
+// Long-tail providers we route through Arcade. The `provider` string is the
+// Arcade dashboard auth-provider id and becomes Connection.provider on the
+// backend (see /connections/arcade/record). Add new entries here once you
+// register them in the Arcade admin.
+const ARCADE_CATALOG: CatalogItem[] = [
+  {
+    kind: "arcade",
+    provider: "google_calendar",
+    name: "Google Calendar",
+    blurb: "Read availability, create and update events.",
+    glyph: <ProviderGlyph color="#4285f4">C</ProviderGlyph>,
+  },
+  {
+    kind: "arcade",
+    provider: "google_drive",
+    name: "Google Drive",
+    blurb: "Search files, fetch contents, upload generated docs.",
+    glyph: <ProviderGlyph color="#0f9d58">D</ProviderGlyph>,
+  },
+  {
+    kind: "arcade",
+    provider: "github",
+    name: "GitHub",
+    blurb: "Read repos, comment on PRs and issues, manage labels.",
+    glyph: <ProviderGlyph color="#e3dcc5">G</ProviderGlyph>,
+  },
+  {
+    kind: "arcade",
+    provider: "asana",
+    name: "Asana",
+    blurb: "Read and update tasks, post comments across projects.",
+    glyph: <ProviderGlyph color="#f06a6a">A</ProviderGlyph>,
+  },
+  {
+    kind: "arcade",
+    provider: "jira",
+    name: "Jira",
+    blurb: "Search issues, comment, transition status.",
+    glyph: <ProviderGlyph color="#2684ff">J</ProviderGlyph>,
+  },
+  {
+    kind: "arcade",
+    provider: "zoom",
+    name: "Zoom",
+    blurb: "Schedule meetings, fetch recordings and transcripts.",
+    glyph: <ProviderGlyph color="#2d8cff">Z</ProviderGlyph>,
+  },
+  {
+    kind: "arcade",
+    provider: "dropbox",
+    name: "Dropbox",
+    blurb: "Search and fetch files; upload generated assets.",
+    glyph: <ProviderGlyph color="#0061ff">B</ProviderGlyph>,
+  },
+  {
+    kind: "arcade",
+    provider: "microsoft",
+    name: "Microsoft 365",
+    blurb: "Outlook, Calendar, OneDrive — read, draft, send.",
+    glyph: <ProviderGlyph color="#0078d4">O</ProviderGlyph>,
+  },
+];
+
+// ─── presentational helpers ────────────────────────────────────────────
 
 function Kicker({ children }: { children: React.ReactNode }) {
   return (
-    <div style={{
-      fontFamily: theme.mono, fontSize: 11, letterSpacing: "0.22em",
-      textTransform: "uppercase", color: theme.inkFaint, marginBottom: 20,
-    }}>{children}</div>
+    <div
+      style={{
+        fontFamily: theme.mono,
+        fontSize: 11,
+        letterSpacing: "0.22em",
+        textTransform: "uppercase",
+        color: theme.inkFaint,
+        marginBottom: 20,
+      }}
+    >
+      {children}
+    </div>
   );
 }
 
 function ConnGroup({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <div style={{
-        fontFamily: theme.mono, fontSize: 10, color: theme.inkFaint,
-        letterSpacing: "0.18em", textTransform: "uppercase", marginBottom: 12,
-      }}>{label}</div>
+      <div
+        style={{
+          fontFamily: theme.mono,
+          fontSize: 10,
+          color: theme.inkFaint,
+          letterSpacing: "0.18em",
+          textTransform: "uppercase",
+          marginBottom: 12,
+        }}
+      >
+        {label}
+      </div>
       <CardGrid>{children}</CardGrid>
     </div>
   );
@@ -435,100 +586,219 @@ function CardGrid({ children }: { children: React.ReactNode }) {
 
 function EmptyState({ children }: { children: React.ReactNode }) {
   return (
-    <div style={{
-      padding: "28px 30px", background: theme.bgSoft,
-      border: `1px dashed ${theme.hair}`,
-      fontFamily: theme.display, fontStyle: "italic", fontWeight: 500,
-      fontSize: 18, color: theme.inkDim, letterSpacing: "-0.01em",
-    }}>{children}</div>
+    <div
+      style={{
+        padding: "28px 30px",
+        background: theme.bgSoft,
+        border: `1px dashed ${theme.hair}`,
+        fontFamily: theme.display,
+        fontStyle: "italic",
+        fontWeight: 500,
+        fontSize: 18,
+        color: theme.inkDim,
+        letterSpacing: "-0.01em",
+      }}
+    >
+      {children}
+    </div>
   );
 }
 
 function ProviderGlyph({ children, color }: { children: React.ReactNode; color: string }) {
   return (
-    <div style={{
-      width: 40, height: 40, borderRadius: 8,
-      display: "flex", alignItems: "center", justifyContent: "center",
-      background: `${color}22`, border: `1px solid ${color}55`,
-      fontFamily: theme.display, fontWeight: 700, fontSize: 22, color,
-    }}>{children}</div>
+    <div
+      style={{
+        width: 40,
+        height: 40,
+        borderRadius: 8,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: `${color}22`,
+        border: `1px solid ${color}55`,
+        fontFamily: theme.display,
+        fontWeight: 700,
+        fontSize: 22,
+        color,
+      }}
+    >
+      {children}
+    </div>
   );
 }
 
-function ActiveCard({ conn, agentName, onDisable, busy }: {
-  conn: Connection; agentName: string | null; onDisable?: () => void; busy: boolean;
+function ActiveCard({
+  conn,
+  agentName,
+  onDisable,
+  busy,
+}: {
+  conn: Connection;
+  agentName: string | null;
+  onDisable?: () => void;
+  busy: boolean;
 }) {
   return (
     <div style={{ padding: "20px 22px", background: theme.bgSoft, border: `1px solid ${theme.hair}` }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
-        <div style={{
-          fontFamily: theme.display, fontWeight: 600, fontSize: 24,
-          letterSpacing: "-0.015em", textTransform: "capitalize",
-        }}>{conn.provider.replace(/_/g, " ")}</div>
-        <span style={{
-          fontFamily: theme.mono, fontSize: 10, color: theme.accent,
-          letterSpacing: "0.18em", textTransform: "uppercase",
-        }}>● active</span>
+        <div
+          style={{
+            fontFamily: theme.display,
+            fontWeight: 600,
+            fontSize: 24,
+            letterSpacing: "-0.015em",
+            textTransform: "capitalize",
+          }}
+        >
+          {conn.provider.replace(/_/g, " ")}
+        </div>
+        <span
+          style={{
+            fontFamily: theme.mono,
+            fontSize: 10,
+            color: theme.accent,
+            letterSpacing: "0.18em",
+            textTransform: "uppercase",
+          }}
+        >
+          ● active
+        </span>
       </div>
-      <div style={{
-        fontFamily: theme.mono, fontSize: 10, color: theme.inkLede,
-        letterSpacing: "0.12em", marginBottom: 6,
-      }}>
+      <div
+        style={{
+          fontFamily: theme.mono,
+          fontSize: 10,
+          color: theme.inkLede,
+          letterSpacing: "0.12em",
+          marginBottom: 6,
+        }}
+      >
         {agentName ? `for ${agentName}` : "shared with all agents"}
       </div>
       {conn.external_account_id && (
-        <div style={{
-          fontFamily: theme.mono, fontSize: 10, color: theme.inkFaint,
-          wordBreak: "break-all", marginBottom: 12,
-        }}>{conn.external_account_id}</div>
+        <div
+          style={{
+            fontFamily: theme.mono,
+            fontSize: 10,
+            color: theme.inkFaint,
+            wordBreak: "break-all",
+            marginBottom: 12,
+          }}
+        >
+          {conn.external_account_id}
+        </div>
       )}
-      <div style={{
-        fontFamily: theme.mono, fontSize: 10, color: theme.inkFaint,
-        marginBottom: onDisable ? 14 : 0,
-      }}>since {new Date(conn.created_at).toLocaleDateString()}</div>
+      <div
+        style={{
+          fontFamily: theme.mono,
+          fontSize: 10,
+          color: theme.inkFaint,
+          marginBottom: onDisable ? 14 : 0,
+        }}
+      >
+        since {new Date(conn.created_at).toLocaleDateString()}
+      </div>
       {onDisable && (
-        <button onClick={onDisable} disabled={busy} style={{
-          background: "transparent", color: theme.inkDim,
-          border: `1px solid ${theme.hair}`,
-          fontFamily: theme.body, fontSize: 12, fontWeight: 500,
-          padding: "6px 14px", borderRadius: 999,
-          cursor: busy ? "default" : "pointer", opacity: busy ? 0.5 : 1,
-        }}>{busy ? "…" : "Disable"}</button>
+        <button
+          onClick={onDisable}
+          disabled={busy}
+          style={{
+            background: "transparent",
+            color: theme.inkDim,
+            border: `1px solid ${theme.hair}`,
+            fontFamily: theme.body,
+            fontSize: 12,
+            fontWeight: 500,
+            padding: "6px 14px",
+            borderRadius: 999,
+            cursor: busy ? "default" : "pointer",
+            opacity: busy ? 0.5 : 1,
+          }}
+        >
+          {busy ? "…" : "Disable"}
+        </button>
       )}
     </div>
   );
 }
 
-function CatalogCardEl({ item, already, busy, attachToName, onConnect }: {
-  item: CatalogItem; already: boolean; busy: boolean; attachToName: string; onConnect: () => void;
+function CatalogCardEl({
+  item,
+  already,
+  busy,
+  attachToName,
+  onConnect,
+}: {
+  item: CatalogItem;
+  already: boolean;
+  busy: boolean;
+  attachToName: string;
+  onConnect: () => void;
 }) {
+  const buttonLabel = (() => {
+    if (already) return "Connected";
+    if (busy) {
+      if (item.kind === "browser") return "Enabling…";
+      if (item.kind === "arcade") return "Opening Arcade…";
+      return "Redirecting…";
+    }
+    if (item.kind === "browser") return `Enable for ${attachToName}`;
+    return `Connect ${item.name}`;
+  })();
+
   return (
-    <div style={{
-      padding: "22px 24px", background: theme.bgSoft, border: `1px solid ${theme.hair}`,
-      display: "flex", flexDirection: "column", gap: 14,
-    }}>
+    <div
+      style={{
+        padding: "22px 24px",
+        background: theme.bgSoft,
+        border: `1px solid ${theme.hair}`,
+        display: "flex",
+        flexDirection: "column",
+        gap: 14,
+      }}
+    >
       <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
         {item.glyph}
-        <div style={{
-          fontFamily: theme.display, fontWeight: 600, fontSize: 26, letterSpacing: "-0.015em",
-        }}>{item.name}</div>
+        <div
+          style={{
+            fontFamily: theme.display,
+            fontWeight: 600,
+            fontSize: 26,
+            letterSpacing: "-0.015em",
+          }}
+        >
+          {item.name}
+        </div>
       </div>
-      <div style={{
-        fontFamily: theme.body, fontSize: 14, color: theme.inkLede,
-        lineHeight: 1.5, flex: 1,
-      }}>{item.blurb}</div>
-      <button onClick={onConnect} disabled={busy || already} style={{
-        background: already ? "transparent" : theme.accent,
-        color: already ? theme.inkFaint : theme.bg,
-        border: already ? `1px solid ${theme.hair}` : "none",
-        fontFamily: theme.body, fontWeight: 600, fontSize: 13,
-        padding: "10px 18px", borderRadius: 999,
-        cursor: already || busy ? "default" : "pointer",
-        opacity: busy ? 0.5 : 1, alignSelf: "flex-start",
-      }}>
-        {already ? "Connected" : busy
-          ? (item.kind === "pipedream" ? "Opening Pipedream…" : "Enabling…")
-          : item.kind === "browser" ? `Enable for ${attachToName}` : `Connect ${item.name}`}
+      <div
+        style={{
+          fontFamily: theme.body,
+          fontSize: 14,
+          color: theme.inkLede,
+          lineHeight: 1.5,
+          flex: 1,
+        }}
+      >
+        {item.blurb}
+      </div>
+      <button
+        onClick={onConnect}
+        disabled={busy || already}
+        style={{
+          background: already ? "transparent" : theme.accent,
+          color: already ? theme.inkFaint : theme.bg,
+          border: already ? `1px solid ${theme.hair}` : "none",
+          fontFamily: theme.body,
+          fontWeight: 600,
+          fontSize: 13,
+          padding: "10px 18px",
+          borderRadius: 999,
+          cursor: already || busy ? "default" : "pointer",
+          opacity: busy ? 0.5 : 1,
+          alignSelf: "flex-start",
+        }}
+      >
+        {buttonLabel}
       </button>
     </div>
   );
@@ -537,16 +807,21 @@ function CatalogCardEl({ item, already, busy, attachToName, onConnect }: {
 function SkeletonCard() {
   return (
     <div style={{ padding: "22px 24px", background: theme.bgSoft, border: `1px solid ${theme.hair}`, height: 142 }}>
-      <div style={{ height: 26, width: "60%", background: "rgba(241,237,224,0.06)", marginBottom: 14 }}/>
-      <div style={{ height: 12, width: "85%", background: "rgba(241,237,224,0.04)", marginBottom: 8 }}/>
-      <div style={{ height: 12, width: "70%", background: "rgba(241,237,224,0.04)" }}/>
+      <div style={{ height: 26, width: "60%", background: "rgba(241,237,224,0.06)", marginBottom: 14 }} />
+      <div style={{ height: 12, width: "85%", background: "rgba(241,237,224,0.04)", marginBottom: 8 }} />
+      <div style={{ height: 12, width: "70%", background: "rgba(241,237,224,0.04)" }} />
     </div>
   );
 }
 
 const selectStyle: React.CSSProperties = {
-  background: theme.bg, color: theme.ink,
-  border: `1px solid ${theme.hair}`, borderRadius: 6,
-  padding: "8px 12px", fontFamily: theme.body, fontSize: 13,
-  outline: "none", cursor: "pointer",
+  background: theme.bg,
+  color: theme.ink,
+  border: `1px solid ${theme.hair}`,
+  borderRadius: 6,
+  padding: "8px 12px",
+  fontFamily: theme.body,
+  fontSize: 13,
+  outline: "none",
+  cursor: "pointer",
 };

@@ -125,6 +125,31 @@ export const agentsApi = {
 
 // Connections --------------------------------------------------------
 
+export type OAuthStartResponse = {
+  auth_url: string;
+  state: string;
+  provider: string;
+  agent_id: string | null;
+};
+
+export type ArcadeStartResponse = {
+  auth_id: string;
+  auth_url: string;
+  status: string;
+  user_id: string;
+  agent_id: string | null;
+};
+
+export type ArcadeStatusResponse = {
+  id?: string;
+  status: "not_started" | "pending" | "completed" | "failed" | string;
+  url?: string;
+  provider_id?: string;
+  user_id?: string;
+  scopes?: string[];
+  context?: Record<string, unknown>;
+};
+
 export const connectionsApi = {
   list: (gt: Fetcher, agentId?: string) => {
     const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
@@ -133,10 +158,12 @@ export const connectionsApi = {
   oauthStart: (gt: Fetcher, provider: string, agentId?: string) => {
     const params = new URLSearchParams({ provider });
     if (agentId) params.set("agent_id", agentId);
-    return request<{ url: string; connected_account_id: string; agent_id: string | null }>(
+    return request<OAuthStartResponse>(
       gt, "POST", `/connections/oauth/start?${params.toString()}`,
     );
   },
+  oauthCallback: (gt: Fetcher, body: { code: string; state: string }) =>
+    request<Connection>(gt, "POST", `/connections/oauth/callback`, body),
   browserEnable: (gt: Fetcher, agentId?: string) => {
     const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
     return request<unknown>(gt, "POST", `/connections/browser/enable${q}`);
@@ -145,29 +172,21 @@ export const connectionsApi = {
     const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
     return request<unknown>(gt, "POST", `/connections/browser/disable${q}`);
   },
-  pipedreamConnectToken: (gt: Fetcher, agentId?: string) =>
-    request<PipedreamConnectToken>(gt, "POST", "/connections/pipedream/connect-token", {
-      agent_id: agentId ?? null,
-    }),
-  pipedreamRecord: (gt: Fetcher, body: PipedreamRecordBody) =>
-    request<Connection>(gt, "POST", "/connections/pipedream/record", body),
-};
-
-export type PipedreamConnectToken = {
-  token: string;
-  expires_at: string;
-  connect_link_url: string;
-  external_user_id: string;
-  project_id: string;
-  environment: "development" | "production";
-  agent_id: string | null;
-};
-
-export type PipedreamRecordBody = {
-  account_id: string;
-  app_slug: string;
-  external_user_id: string;
-  agent_id?: string | null;
+  arcadeStart: (
+    gt: Fetcher,
+    body: { provider: string; agent_id?: string | null; scopes?: string[] },
+  ) => request<ArcadeStartResponse>(gt, "POST", `/connections/arcade/start`, body),
+  arcadeStatus: (gt: Fetcher, authId: string, wait = 0) => {
+    const params = new URLSearchParams({ auth_id: authId });
+    if (wait > 0) params.set("wait", String(wait));
+    return request<ArcadeStatusResponse>(
+      gt, "GET", `/connections/arcade/status?${params.toString()}`,
+    );
+  },
+  arcadeRecord: (
+    gt: Fetcher,
+    body: { auth_id: string; agent_id?: string | null },
+  ) => request<Connection>(gt, "POST", `/connections/arcade/record`, body),
 };
 
 // Audit --------------------------------------------------------------
