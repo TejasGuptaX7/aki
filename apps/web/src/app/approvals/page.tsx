@@ -7,16 +7,29 @@ import { useAgents, useAuthToken } from "@/lib/agents";
 import { approvalsApi, Approval } from "@/lib/api";
 
 /**
- * Approvals inbox. The backend endpoint (GET /approvals) lands in a
- * follow-up; the API client returns [] for 404/405 so the page renders
- * its empty state cleanly today. When the endpoint exists, this page
- * already polls it every 10s and re-renders.
+ * Approvals inbox. Polls GET /approvals every 10s; Approve / Deny
+ * dispatch to /approvals/{id}/approve and /approvals/{id}/deny and
+ * optimistically remove the row from the list. On failure we restore
+ * the row and surface the error.
  */
 export default function ApprovalsPage() {
   const tok = useAuthToken();
   const { agents } = useAgents();
   const [items, setItems] = React.useState<Approval[] | null>(null);
   const [err, setErr] = React.useState<string | null>(null);
+  // Rows currently being acted on — disables both buttons + dims the row
+  // while the request is in flight so users don't double-click.
+  const [pending, setPending] = React.useState<Record<string, "approve" | "deny" | undefined>>({});
+
+  const refetch = React.useCallback(async () => {
+    try {
+      const list = await approvalsApi.list(tok);
+      setItems(list);
+      setErr(null);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  }, [tok]);
 
   React.useEffect(() => {
     let mounted = true;
@@ -32,6 +45,33 @@ export default function ApprovalsPage() {
     const id = setInterval(tick, 10_000);
     return () => { mounted = false; clearInterval(id); };
   }, [tok]);
+
+  const decide = React.useCallback(async (approval: Approval, decision: "approve" | "deny") => {
+    setErr(null);
+    setPending((p) => ({ ...p, [approval.id]: decision }));
+
+    // Optimistically remove from the list — the agent runtime moves on
+    // immediately on the server side, so the row shouldn't linger.
+    const snapshot = items;
+    setItems((curr) => curr?.filter((x) => x.id !== approval.id) ?? curr);
+
+    try {
+      if (decision === "approve") await approvalsApi.approve(tok, approval.id);
+      else await approvalsApi.deny(tok, approval.id);
+      // Refetch in the background to pick up any new rows the polling
+      // tick might've missed, but don't await — we already updated the UI.
+      refetch();
+    } catch (e) {
+      setItems(snapshot ?? null);
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPending((p) => {
+        const next = { ...p };
+        delete next[approval.id];
+        return next;
+      });
+    }
+  }, [tok, items, refetch]);
 
   const agentName = React.useCallback(
     (id: string) => agents.find((a) => a.id === id)?.name ?? id.slice(0, 8),
@@ -61,7 +101,11 @@ export default function ApprovalsPage() {
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
             {items.map((a) => (
-              <ApprovalRow key={a.id} approval={a} agentName={agentName(a.agent_id)}/>
+              <ApprovalRow key={a.id}
+                approval={a}
+                agentName={agentName(a.agent_id)}
+                pending={pending[a.id]}
+                onDecide={(decision) => decide(a, decision)}/>
             ))}
           </div>
         )}
@@ -93,12 +137,20 @@ function EmptyState() {
   );
 }
 
-function ApprovalRow({ approval, agentName }: { approval: Approval; agentName: string }) {
+function ApprovalRow({ approval, agentName, pending, onDecide }: {
+  approval: Approval;
+  agentName: string;
+  pending: "approve" | "deny" | undefined;
+  onDecide: (decision: "approve" | "deny") => void;
+}) {
+  const busy = pending !== undefined;
   return (
     <div style={{
       padding: "18px 22px", background: theme.bgSoft,
       border: `1px solid ${theme.hair}`,
       display: "grid", gridTemplateColumns: "1fr auto", gap: 18, alignItems: "center",
+      opacity: busy ? 0.55 : 1,
+      transition: "opacity 0.15s ease",
     }}>
       <div style={{ minWidth: 0 }}>
         <div style={{
@@ -114,11 +166,19 @@ function ApprovalRow({ approval, agentName }: { approval: Approval; agentName: s
         }}>{new Date(approval.created_at).toLocaleString()}</div>
       </div>
       <div style={{ display: "flex", gap: 8 }}>
-        <button disabled style={{ ...secondaryBtn, opacity: 0.5 }} title="Backend endpoint not yet wired">
-          Reject
+        <button
+          onClick={() => onDecide("deny")}
+          disabled={busy}
+          style={{ ...secondaryBtn, cursor: busy ? "default" : "pointer" }}
+        >
+          {pending === "deny" ? "Rejecting…" : "Reject"}
         </button>
-        <button disabled style={{ ...primaryBtn, opacity: 0.5 }} title="Backend endpoint not yet wired">
-          Approve
+        <button
+          onClick={() => onDecide("approve")}
+          disabled={busy}
+          style={{ ...primaryBtn, cursor: busy ? "default" : "pointer" }}
+        >
+          {pending === "approve" ? "Approving…" : "Approve"}
         </button>
       </div>
     </div>

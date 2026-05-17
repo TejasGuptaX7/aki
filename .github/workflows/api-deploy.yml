@@ -1,0 +1,152 @@
+name: api-deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "services/api/**"
+      - "infra/fly/api.toml"
+      - ".github/workflows/api-deploy.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: api-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/aki-api
+
+jobs:
+  build-push:
+    name: build & push image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve tag
+        id: meta
+        run: |
+          SHA="${GITHUB_SHA::12}"
+          IMAGE="${REGISTRY}/${IMAGE_NAME}:${SHA}"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "Resolved image: ${IMAGE}"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/api/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  migrate:
+    name: alembic migrate (pre-deploy)
+    needs: build-push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    env:
+      DATABASE_URL_SYNC: ${{ secrets.DATABASE_URL_SYNC }}
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sanity-check DB URL present
+        run: |
+          if [ -z "${DATABASE_URL_SYNC}" ]; then
+            echo "::error::DATABASE_URL_SYNC secret is empty"
+            exit 1
+          fi
+
+      # --check exits non-zero if there are pending migrations the deployer
+      # has not reviewed. If it passes, we still run `upgrade head` so that
+      # a fresh DB or a redeploy without new revisions is idempotent.
+      - name: alembic check
+        id: check
+        continue-on-error: true
+        run: |
+          docker run --rm \
+            -e DATABASE_URL_SYNC \
+            -w /app \
+            ${{ needs.build-push.outputs.image }} \
+            alembic -c alembic.ini check
+
+      - name: Fail loudly if pending migrations
+        if: steps.check.outcome == 'failure'
+        run: |
+          echo "::error::alembic check reports pending migrations. Review the diff, then re-run with workflow_dispatch to apply."
+          exit 1
+
+      - name: alembic upgrade head
+        run: |
+          docker run --rm \
+            -e DATABASE_URL_SYNC \
+            -w /app \
+            ${{ needs.build-push.outputs.image }} \
+            alembic -c alembic.ini upgrade head
+
+  deploy:
+    name: flyctl deploy
+    needs: [build-push, migrate]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Deploy
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          flyctl deploy \
+            --config infra/fly/api.toml \
+            --image ${{ needs.build-push.outputs.image }} \
+            --remote-only \
+            --wait-timeout 300
+
+  notify-failure:
+    name: notify Slack on failure
+    if: failure()
+    needs: [build-push, migrate, deploy]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post to Slack
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_DEPLOY_WEBHOOK }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "${SLACK_WEBHOOK_URL}" ]; then
+            echo "::warning::SLACK_DEPLOY_WEBHOOK not set; skipping notify"
+            exit 0
+          fi
+          payload=$(jq -nc \
+            --arg text ":rotating_light: aki-api deploy failed on \`${GITHUB_REF_NAME}\` @ \`${GITHUB_SHA::7}\` — <${RUN_URL}|run>" \
+            '{text: $text}')
+          curl --fail --silent --show-error -X POST \
+            -H 'Content-Type: application/json' \
+            --data "$payload" \
+            "$SLACK_WEBHOOK_URL"

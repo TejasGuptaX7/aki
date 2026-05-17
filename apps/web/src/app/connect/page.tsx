@@ -5,15 +5,19 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { theme } from "@/lib/theme";
 import { AppShell, ErrorBanner, SectionHeader } from "@/components/AppShell";
 import { useAgents, useAuthToken } from "@/lib/agents";
-import { connectionsApi, Connection } from "@/lib/api";
+import { connectionsApi, Connection, PipedreamConnectToken } from "@/lib/api";
 
 const ORG_SCOPE = "__org__";
 
 type CatalogItem = {
+  /** Stable id for "already connected" matching. For Pipedream, this is
+   *  the app_slug we send back to /pipedream/record. For browser, it's "browser". */
   provider: string;
+  /** Pipedream app slug if kind === "pipedream". May equal provider. */
+  appSlug?: string;
   name: string;
   blurb: string;
-  kind: "oauth" | "browser";
+  kind: "pipedream" | "browser";
   glyph: React.ReactNode;
 };
 
@@ -31,9 +35,7 @@ function ConnectPageInner() {
   const tok = useAuthToken();
   const { agents } = useAgents();
   const urlAgent = search?.get("agent_id") ?? null;
-  // scope: ORG_SCOPE means "org-wide only", agent id means "viewing this agent"
   const [scope, setScope] = React.useState<string>(urlAgent ?? ORG_SCOPE);
-  // Where new connections should be attached when user clicks "Connect"
   const [attachTo, setAttachTo] = React.useState<string>(urlAgent ?? ORG_SCOPE);
 
   React.useEffect(() => {
@@ -51,9 +53,6 @@ function ConnectPageInner() {
   const fetchConns = React.useCallback(async () => {
     setErr(null);
     try {
-      // When viewing a specific agent, fetch with agent_id so we get
-      // org-wide ∪ that agent's connections. When viewing org-wide,
-      // omit agent_id; we'll filter to agent_id IS NULL client-side.
       const list = await connectionsApi.list(tok, scope === ORG_SCOPE ? undefined : scope);
       setConns(list);
     } catch (e: unknown) {
@@ -62,6 +61,52 @@ function ConnectPageInner() {
   }, [tok, scope]);
 
   React.useEffect(() => { fetchConns(); }, [fetchConns]);
+
+  // Fallback redirect path: if Pipedream's hosted flow sent us back
+  // with account params (or just sessionStorage-pending state), close
+  // the loop by POSTing /pipedream/record. The SDK path returns
+  // synchronously and never lands here.
+  React.useEffect(() => {
+    if (typeof window === "undefined") return;
+    const pending = sessionStorage.getItem("aki.pipedream.pending");
+    if (!pending) return;
+    let parsed: { appSlug: string; externalUserId: string; agentId: string | null; startedAt: number };
+    try {
+      parsed = JSON.parse(pending);
+    } catch {
+      sessionStorage.removeItem("aki.pipedream.pending");
+      return;
+    }
+    // Pipedream's hosted redirect typically appends account_id; we accept
+    // a few naming variants defensively. If none of them appear we still
+    // clear the pending state to avoid a stuck modal next page-load.
+    const accountId = search?.get("account_id")
+      ?? search?.get("pd_account_id")
+      ?? search?.get("connected_account_id");
+    sessionStorage.removeItem("aki.pipedream.pending");
+    if (!accountId) return;
+    (async () => {
+      try {
+        await connectionsApi.pipedreamRecord(tok, {
+          account_id: accountId,
+          app_slug: parsed.appSlug,
+          external_user_id: parsed.externalUserId,
+          agent_id: parsed.agentId,
+        });
+        setOk(true);
+        await fetchConns();
+        // Strip the pd_* params from the URL so refreshes don't re-record.
+        const params = new URLSearchParams(search?.toString() ?? "");
+        ["account_id", "pd_account_id", "connected_account_id"].forEach((k) => params.delete(k));
+        const qs = params.toString();
+        router.replace(`/connect${qs ? `?${qs}` : ""}`);
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : String(e));
+      }
+    })();
+  // We only want this to run once on mount — search/tok/fetchConns are stable enough.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function setScopeAndPushUrl(next: string) {
     setScope(next);
@@ -75,17 +120,33 @@ function ConnectPageInner() {
 
   async function connect(item: CatalogItem) {
     setBusy(item.provider); setErr(null);
+    const agentArg = attachTo === ORG_SCOPE ? undefined : attachTo;
     try {
-      const agentArg = attachTo === ORG_SCOPE ? undefined : attachTo;
-      if (item.kind === "oauth") {
-        const { url } = await connectionsApi.oauthStart(tok, item.provider, agentArg);
-        window.location.href = url;
-        return;
-      }
       if (item.kind === "browser") {
         await connectionsApi.browserEnable(tok, agentArg);
         await fetchConns();
         setBusy(null);
+        return;
+      }
+      if (item.kind === "pipedream") {
+        await connectViaPipedream({
+          appSlug: item.appSlug ?? item.provider,
+          agentId: agentArg,
+          tok,
+          onDone: async () => {
+            setOk(true);
+            await fetchConns();
+            setBusy(null);
+          },
+          onError: (msg) => {
+            setErr(msg);
+            setBusy(null);
+          },
+          onCancelled: () => {
+            setBusy(null);
+          },
+        });
+        return;
       }
     } catch (e: unknown) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -105,25 +166,12 @@ function ConnectPageInner() {
     }
   }
 
-  const catalog: CatalogItem[] = [
-    { provider: "gmail", name: "Gmail", kind: "oauth",
-      blurb: "Read, draft, send, label, and search.",
-      glyph: <ProviderGlyph color="#ea4335">M</ProviderGlyph> },
-    { provider: "slackbot", name: "Slack (as a bot)", kind: "oauth",
-      blurb: "Installs Aki as a workspace bot — messages come from Aki, not from you.",
-      glyph: <ProviderGlyph color="#611f69">S</ProviderGlyph> },
-    { provider: "browser", name: "Browser Mode", kind: "browser",
-      blurb: "For any tool without an API — Aki drives a real Chrome via Browser Use.",
-      glyph: <ProviderGlyph color={theme.accent}>↗</ProviderGlyph> },
-  ];
+  const catalog = CATALOG;
 
   const active = (conns ?? []).filter((c) => c.status === "active");
   const orgWide = active.filter((c) => c.agent_id === null);
   const perAgent = active.filter((c) => c.agent_id !== null);
 
-  // For "already connected" badge: when attaching to a specific agent,
-  // a connection counts if it's org-wide OR attached to this agent.
-  // When attaching org-wide, only org-wide counts.
   function alreadyConnected(provider: string): boolean {
     if (attachTo === ORG_SCOPE) return orgWide.some((c) => c.provider === provider);
     return active.some((c) => c.provider === provider && (c.agent_id === null || c.agent_id === attachTo));
@@ -138,7 +186,7 @@ function ConnectPageInner() {
       <SectionHeader
         kicker="/01 · connections"
         title={<>Connect a tool. <em style={{ fontStyle: "italic", fontWeight: 500 }}>The agent does the rest.</em></>}
-        lede="Each connection gives an agent scoped access via Composio. OAuth happens on the provider's domain; we never see your password."
+        lede="OAuth runs through Pipedream's hosted flow, white-labeled to Aki. We never see your password. Tokens are stored encrypted per-org."
       />
 
       {err && <ErrorBanner>{err}</ErrorBanner>}
@@ -235,6 +283,127 @@ function ConnectPageInner() {
   );
 }
 
+// ─── pipedream connect flow ───────────────────────────────────────────
+//
+// Two paths:
+// 1. SDK iframe modal — `client.connectAccount({ token, app, onSuccess })`.
+//    User stays on /connect; we get an `id` back synchronously through the
+//    callback and post it to /pipedream/record.
+// 2. Fallback hosted redirect — `window.location.href = connect_link_url`.
+//    Used if the SDK fails to import (CSP issue, blocked iframe, etc.).
+//    In this case the backend's success_redirect_uri lands the user back
+//    on /connect?pd_account_id=…&pd_app=… and we record on mount.
+async function connectViaPipedream({ appSlug, agentId, tok, onDone, onError, onCancelled }: {
+  appSlug: string;
+  agentId?: string;
+  tok: () => Promise<string | null>;
+  onDone: () => Promise<void> | void;
+  onError: (msg: string) => void;
+  onCancelled: () => void;
+}) {
+  let tokenResp: PipedreamConnectToken;
+  try {
+    tokenResp = await connectionsApi.pipedreamConnectToken(tok, agentId);
+  } catch (e) {
+    onError(e instanceof Error ? e.message : String(e));
+    return;
+  }
+
+  // Try the SDK first — it's a better UX (stays in-page).
+  try {
+    const mod = await import("@pipedream/sdk/browser");
+    const client = mod.createFrontendClient({
+      externalUserId: tokenResp.external_user_id,
+      projectId: tokenResp.project_id,
+      projectEnvironment: tokenResp.environment,
+      tokenCallback: async () => ({
+        token: tokenResp.token,
+        expiresAt: new Date(tokenResp.expires_at),
+        connectLinkUrl: tokenResp.connect_link_url,
+      }),
+    });
+
+    let settled = false;
+
+    await client.connectAccount({
+      app: appSlug,
+      token: tokenResp.token,
+      onSuccess: async ({ id }) => {
+        if (settled) return;
+        settled = true;
+        try {
+          await connectionsApi.pipedreamRecord(tok, {
+            account_id: id,
+            app_slug: appSlug,
+            external_user_id: tokenResp.external_user_id,
+            agent_id: tokenResp.agent_id,
+          });
+          await onDone();
+        } catch (e) {
+          onError(e instanceof Error ? e.message : String(e));
+        }
+      },
+      onError: (err) => {
+        if (settled) return;
+        settled = true;
+        onError(err.message);
+      },
+      onClose: (status) => {
+        if (settled) return;
+        if (!status.successful) {
+          settled = true;
+          onCancelled();
+        }
+      },
+    });
+    return;
+  } catch (sdkErr) {
+    // SDK import or modal failed — fall back to hosted redirect.
+    if (typeof window !== "undefined" && tokenResp.connect_link_url) {
+      sessionStorage.setItem("aki.pipedream.pending", JSON.stringify({
+        appSlug,
+        externalUserId: tokenResp.external_user_id,
+        agentId: tokenResp.agent_id,
+        startedAt: Date.now(),
+      }));
+      window.location.href = tokenResp.connect_link_url;
+      return;
+    }
+    onError(sdkErr instanceof Error ? sdkErr.message : String(sdkErr));
+  }
+}
+
+const CATALOG: CatalogItem[] = [
+  // Pipedream's `slack` app is user-OAuth (acts as the human). We use the
+  // bot variant exclusively so agent posts come from "Aki", not from the
+  // installer. If `slack_bot` ever gets renamed in Pipedream's catalog,
+  // this is the one string to change.
+  { provider: "slack_bot", appSlug: "slack_bot", name: "Slack (as a bot)", kind: "pipedream",
+    blurb: "Installs Aki as a workspace bot — messages come from Aki, not from you.",
+    glyph: <ProviderGlyph color="#611f69">S</ProviderGlyph> },
+  { provider: "gmail", appSlug: "gmail", name: "Gmail", kind: "pipedream",
+    blurb: "Read, draft, send, label, and search.",
+    glyph: <ProviderGlyph color="#ea4335">M</ProviderGlyph> },
+  { provider: "google_calendar", appSlug: "google_calendar", name: "Google Calendar", kind: "pipedream",
+    blurb: "Read availability, create and update events.",
+    glyph: <ProviderGlyph color="#4285f4">C</ProviderGlyph> },
+  { provider: "github", appSlug: "github", name: "GitHub", kind: "pipedream",
+    blurb: "Read repos, comment on PRs and issues, manage labels.",
+    glyph: <ProviderGlyph color="#e3dcc5">G</ProviderGlyph> },
+  { provider: "linear", appSlug: "linear", name: "Linear", kind: "pipedream",
+    blurb: "Read, comment, and transition issues across teams.",
+    glyph: <ProviderGlyph color="#5e6ad2">L</ProviderGlyph> },
+  { provider: "notion", appSlug: "notion", name: "Notion", kind: "pipedream",
+    blurb: "Read pages, create entries in selected databases.",
+    glyph: <ProviderGlyph color="#e3dcc5">N</ProviderGlyph> },
+  { provider: "hubspot", appSlug: "hubspot", name: "HubSpot", kind: "pipedream",
+    blurb: "Read and create contacts, log activity, manage deals.",
+    glyph: <ProviderGlyph color="#ff7a59">H</ProviderGlyph> },
+  { provider: "browser", name: "Browser Mode", kind: "browser",
+    blurb: "For any tool without an API — Aki drives a real Chrome via Browser Use.",
+    glyph: <ProviderGlyph color={theme.accent}>↗</ProviderGlyph> },
+];
+
 function Kicker({ children }: { children: React.ReactNode }) {
   return (
     <div style={{
@@ -295,7 +464,7 @@ function ActiveCard({ conn, agentName, onDisable, busy }: {
         <div style={{
           fontFamily: theme.display, fontWeight: 600, fontSize: 24,
           letterSpacing: "-0.015em", textTransform: "capitalize",
-        }}>{conn.provider}</div>
+        }}>{conn.provider.replace(/_/g, " ")}</div>
         <span style={{
           fontFamily: theme.mono, fontSize: 10, color: theme.accent,
           letterSpacing: "0.18em", textTransform: "uppercase",
@@ -358,7 +527,7 @@ function CatalogCardEl({ item, already, busy, attachToName, onConnect }: {
         opacity: busy ? 0.5 : 1, alignSelf: "flex-start",
       }}>
         {already ? "Connected" : busy
-          ? (item.kind === "oauth" ? "Redirecting…" : "Enabling…")
+          ? (item.kind === "pipedream" ? "Opening Pipedream…" : "Enabling…")
           : item.kind === "browser" ? `Enable for ${attachToName}` : `Connect ${item.name}`}
       </button>
     </div>

@@ -130,8 +130,7 @@ export function Footer() {
     {
       label: "company",
       links: [
-        // TODO: real status page URL — point to "/" until status.aki.dev exists.
-        { href: "/", text: "Status" },
+        { href: "https://status.aki.dev", text: "Status", external: true },
         { href: "https://github.com/anthropics", text: "GitHub", external: true },
         { href: "mailto:hello@tryclean.ai", text: "hello@tryclean.ai" },
         { href: "mailto:security@tryclean.ai", text: "Responsible disclosure" },

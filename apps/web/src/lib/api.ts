@@ -121,6 +121,29 @@ export const connectionsApi = {
     const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
     return request<unknown>(gt, "POST", `/connections/browser/disable${q}`);
   },
+  pipedreamConnectToken: (gt: Fetcher, agentId?: string) =>
+    request<PipedreamConnectToken>(gt, "POST", "/connections/pipedream/connect-token", {
+      agent_id: agentId ?? null,
+    }),
+  pipedreamRecord: (gt: Fetcher, body: PipedreamRecordBody) =>
+    request<Connection>(gt, "POST", "/connections/pipedream/record", body),
+};
+
+export type PipedreamConnectToken = {
+  token: string;
+  expires_at: string;
+  connect_link_url: string;
+  external_user_id: string;
+  project_id: string;
+  environment: "development" | "production";
+  agent_id: string | null;
+};
+
+export type PipedreamRecordBody = {
+  account_id: string;
+  app_slug: string;
+  external_user_id: string;
+  agent_id?: string | null;
 };
 
 // Audit --------------------------------------------------------------
@@ -136,17 +159,24 @@ export const auditApi = {
   },
 };
 
-// Approvals (placeholder — endpoint not yet shipped on backend) -----
+// Approvals --------------------------------------------------------
 
 export const approvalsApi = {
   list: async (gt: Fetcher): Promise<Approval[]> => {
     try {
       return await request<Approval[]>(gt, "GET", "/approvals");
     } catch (e) {
-      // Backend ships in a later session. Silently return empty so the
-      // UI renders its empty state.
+      // The list endpoint may briefly 404 during a backend deploy; treat
+      // that as an empty inbox so the UI renders its empty state cleanly
+      // instead of showing a scary error.
       if (e instanceof ApiError && (e.status === 404 || e.status === 405)) return [];
       throw e;
     }
   },
+  approve: (gt: Fetcher, id: string, note?: string) =>
+    request<unknown>(gt, "POST", `/approvals/${encodeURIComponent(id)}/approve`,
+      note ? { note } : undefined),
+  deny: (gt: Fetcher, id: string, note?: string) =>
+    request<unknown>(gt, "POST", `/approvals/${encodeURIComponent(id)}/deny`,
+      note ? { note } : undefined),
 };

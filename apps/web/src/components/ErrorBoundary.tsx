@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import * as Sentry from "@sentry/nextjs";
 import { theme } from "@/lib/theme";
 
 type State = { error: Error | null };
@@ -9,6 +10,10 @@ type State = { error: Error | null };
  * Catch render errors in pages so one component crash doesn't blank the
  * whole shell. React's docs say this still needs to be a class component
  * — no hook equivalent for componentDidCatch yet.
+ *
+ * Render crashes are also forwarded to Sentry via captureException so the
+ * "Something cracked." card shown to the user has a real backing trace.
+ * Sentry no-ops when NEXT_PUBLIC_SENTRY_DSN is unset.
  */
 export class ErrorBoundary extends React.Component<{ children: React.ReactNode }, State> {
   state: State = { error: null };
@@ -18,7 +23,10 @@ export class ErrorBoundary extends React.Component<{ children: React.ReactNode }
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
-    console.error("Aki render crash:", error, info);
+    Sentry.captureException(error, {
+      tags: { source: "react-error-boundary" },
+      extra: { componentStack: info.componentStack ?? null },
+    });
   }
 
   render() {
