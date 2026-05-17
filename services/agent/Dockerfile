@@ -1,4 +1,5 @@
-# Hermes per-org runtime. One image, one process per org, hibernates idle.
+# Hermes per-org runtime. One image, one container per org, multiple
+# Hermes profiles inside (one per agent), managed by supervisor.py.
 #
 # Note: docs/architecture.md targets sub-version v0.4.0 but Nous publishes a
 # different version line to PyPI (calver-ish, currently 0.13.0). For now we
@@ -7,8 +8,9 @@
 #
 # Differs from Nous's official Dockerfile:
 #   - pip install (not source build) — no TUI, no Playwright, no web dashboard
-#   - we only need the gateway (OpenAI-compatible API server) + MCP
-#   - control plane handles per-org workspace mount + config materialization
+#   - supervisor.py (this repo) sits in front of N hermes profiles, one per
+#     agent, and proxies /v1/* by X-Aki-Agent-Id header
+#   - control plane handles per-org workspace mount + manifest authoring
 #
 # If we ever need browser tools or the TUI, switch to building from
 # github.com/NousResearch/hermes-agent's Dockerfile instead.
@@ -27,28 +29,32 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # hermes-agent + extras the gateway needs at runtime that aren't hard deps:
 #   - mcp >=1.6 for streamable HTTP transport (composio MCP)
-#   - aiohttp for the OpenAI-compatible API server
+#   - aiohttp for the OpenAI-compatible API server AND the supervisor proxy
 RUN pip install \
         "hermes-agent==${HERMES_VERSION}" \
         "mcp>=1.6.0" \
         "aiohttp>=3.9"
 
 # Per-org workspace mount. Control plane mounts
-# ${HERMES_DATA_DIR}/<org_id>/ here at container start.
+# ${HERMES_DATA_DIR}/<org_id>/ here at container start. Per-agent
+# Hermes profiles live under /opt/data/agents/<agent_id>/.
 WORKDIR /opt/data
 VOLUME ["/opt/data"]
 
-COPY hermes.config.yaml /etc/hermes/hermes.config.yaml.tpl
+# Supervisor sits at /opt/supervisor.py so it survives `HERMES_HOME=/opt/data`
+# being a volume mount (anything under /opt/data is overwritten at runtime).
+COPY supervisor.py /opt/supervisor.py
 
-# The OpenAI-compatible API server is OFF unless these are set. Our
-# control plane proxies to it, so it MUST be on.
-ENV API_SERVER_HOST=0.0.0.0 \
-    API_SERVER_PORT=8080
-# API_SERVER_KEY is provided at `docker run` time per-org so each container
-# has a unique key for the control plane proxy to send.
+# Defaults overridden by the control plane at `docker run` time per-org:
+#   SUPERVISOR_API_KEY  (required; control plane supplies a fresh secret)
+#   PROFILE_PORT_LOW / PROFILE_PORT_HIGH (defaults baked into supervisor.py)
+ENV SUPERVISOR_HOST=0.0.0.0 \
+    SUPERVISOR_PORT=8080
 
 EXPOSE 8080
 
-# tini reaps zombie children from MCP stdio subprocesses.
+# tini reaps zombie children from hermes profile subprocesses and forwards
+# SIGTERM cleanly so `docker stop` runs the supervisor's shutdown handler
+# which in turn SIGTERMs all hermes profiles before exit.
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["sh", "-c", "envsubst < /etc/hermes/hermes.config.yaml.tpl > /opt/data/hermes.config.yaml && hermes gateway --config /opt/data/hermes.config.yaml"]
+CMD ["python3", "/opt/supervisor.py"]

@@ -1,9 +1,9 @@
 """Inbound webhooks.
 
 POST /webhooks/clerk — Clerk fires this on user.created, user.updated, etc.
-The handler is the *one* place an org and its first user are provisioned
-together: same transaction, plus a default org_memory row and a Composio
-entity. Idempotent on clerk_user_id so replays are safe.
+The handler is the *one* place an org, its first user, and the org's default
+"Aki" agent are provisioned together — same transaction, idempotent on
+clerk_user_id so replays are safe.
 
 Verified via svix (Clerk uses Svix for webhook signing).
 """
@@ -20,7 +20,8 @@ from app.clerk_client import update_user_public_metadata
 from app.config import get_settings
 from app.db import session_for_org, SessionLocal
 from app.limits import limiter
-from app.models import Organization, OrgMemory, User
+from app.models import Agent, AgentMemory, Organization, User
+from app.routes.agents import DEFAULT_SYSTEM_PROMPT
 
 
 log = logging.getLogger(__name__)
@@ -97,10 +98,26 @@ async def clerk_webhook(request: Request) -> None:
             organization_id=org.id,
         )
         db.add(user)
+
+        # Every org gets a default agent named "Aki" so the chat surface is
+        # usable from the first sign-in. The user can rename it, create more,
+        # or delete it later (as long as one active agent remains).
+        default_agent = Agent(
+            id=uuid4(),
+            organization_id=org.id,
+            name="Aki",
+            slug="aki",
+            system_prompt=DEFAULT_SYSTEM_PROMPT.format(name="Aki"),
+            status="active",
+        )
+        db.add(default_agent)
+        await db.flush()
+
         db.add(
-            OrgMemory(
+            AgentMemory(
                 id=uuid4(),
                 organization_id=org.id,
+                agent_id=default_agent.id,
                 key="onboarding",
                 value=f"Org created for {email} on signup.",
             )

@@ -1,39 +1,52 @@
-# services/agent — Hermes per-org runtime
+# services/agent — per-org Hermes container
 
-One Hermes Agent process per organization, pinned to **v0.4.0**.
-Receives traffic from the control plane gateway (`services/api`), never from
-the browser directly.
+One Docker container per organization, with multiple Hermes profiles inside
+(one per agent). A small Python supervisor (`supervisor.py`) runs as PID 1,
+manages the profile subprocesses, and proxies `/v1/*` requests to the
+right profile based on the `X-Aki-Agent-Id` header.
+
+Pinned to `hermes-agent==0.13.0` from PyPI.
 
 ## Topology
 
 ```
-browser ──► services/api gateway ──► services/agent (per-org Hermes)
-                       │                       │
-                       │                       └─ MCP / Composio / native plugins
-                       └─ enforces auth, RBAC, audit before any tool call
+                     ┌─────── one Docker container per org ────────┐
+                     │                                              │
+browser ──► services/api ──► supervisor.py (:8080)                  │
+                     │         ├─ /v1/* proxied by X-Aki-Agent-Id   │
+                     │         └─ /control/{health,reload}          │
+                     │                                              │
+                     │       hermes -p <agent-uuid> gateway run     │
+                     │         (one process per agent, internal     │
+                     │          ports 9001-9100, isolated MEMORY/   │
+                     │          USER/sessions per profile)          │
+                     │                                              │
+                     └──────────────────────────────────────────────┘
 ```
 
-See `docs/architecture.md` §4 for the design.
+See `docs/architecture.md` §5 for the runtime model and §6 for how
+connections become per-agent MCP servers.
+
+## What lives here
+
+- `Dockerfile` — image definition (`aki-hermes:0.13.0`, Python 3.12 base)
+- `supervisor.py` — PID-1 process that manages profiles and proxies requests
+
+What does **not** live here:
+
+- Per-org state, secrets, manifest, per-agent config — written by the
+  control plane (`services/api/app/agent_runtime.py`) into the mounted
+  volume at `/opt/data/`
+- Tool catalogues / OAuth tokens — those live in Composio / Pipedream and
+  surface to Hermes via MCP
 
 ## Local dev
 
 ```bash
 # from repo root
-docker build -t aki-agent:0.4.0 services/agent
-docker run --rm -p 8080:8080 \
-  -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
-  -v "$PWD/.local/hermes/dev-org":/workspace \
-  aki-agent:0.4.0
+docker build -t aki-hermes:0.13.0 services/agent
+# the control plane launches containers; running by hand is for debugging only
 ```
 
-The control plane materializes one `${HERMES_DATA_DIR}/<org_id>/` directory
-per org and mounts it at `/workspace` when starting the container. Memory
-files (`MEMORY.md`, `USER.md`) and OAuth tokens persist there between runs.
-
-## What lives here
-
-- `Dockerfile` — image definition (Hermes 0.4.0 base).
-- `hermes.config.yaml` — config **template** rendered with `envsubst` at boot.
-
-What does **not** live here: per-org state, secrets, or org-specific tool
-registrations. Those come from Postgres at boot time via the sync skill.
+To exercise end-to-end, run uvicorn against the API and let it `docker run`
+the container for a real org. See `services/api/README.md` for that path.
