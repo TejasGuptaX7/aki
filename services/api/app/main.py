@@ -10,7 +10,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
-from app.agent_runtime import hibernation_loop, shutdown_all
+from app.agent_runtime import hibernation_loop, reap_orphans, shutdown_all
 from app.config import get_settings
 from app.limits import limiter
 from app.routes import chat, connections, health, me, webhooks
@@ -21,7 +21,16 @@ log = logging.getLogger("aki")
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Background tasks: hibernate idle per-org Hermes containers."""
+    """Startup: reap orphaned containers from any previous crashed run.
+    Background: hibernate idle per-org Hermes containers.
+    Shutdown: stop everything tracked."""
+    try:
+        n = await reap_orphans()
+        if n:
+            log.info("reaped %d orphaned hermes container(s) on startup", n)
+    except Exception:
+        log.exception("reap_orphans failed (continuing startup)")
+
     task = asyncio.create_task(hibernation_loop())
     try:
         yield

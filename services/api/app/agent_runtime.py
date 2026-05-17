@@ -249,3 +249,30 @@ async def shutdown_all() -> None:
             await shutdown(org_id)
         except Exception:
             log.exception("shutdown failed for org=%s", org_id)
+
+
+async def reap_orphans() -> int:
+    """On startup, remove any `aki-hermes-*` containers that aren't in the
+    in-memory registry. Handles the case where uvicorn was killed without
+    running its lifespan shutdown — those containers would otherwise linger
+    forever and block their host ports.
+
+    Returns the count reaped.
+    """
+    client = docker.from_env()
+
+    def _list_and_kill() -> int:
+        n = 0
+        for c in client.containers.list(all=True, filters={"name": "aki-hermes-"}):
+            try:
+                c.stop(timeout=5)
+            except Exception:
+                pass
+            try:
+                c.remove(force=True)
+                n += 1
+            except Exception:
+                pass
+        return n
+
+    return await asyncio.to_thread(_list_and_kill)
