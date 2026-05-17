@@ -1,0 +1,10 @@
+# proxy/ runtime deps. Deliberately leaner than the v1 service —
+# no Chromium, no upstream browser-harness package, no Pillow needed at
+# runtime (screenshots round-trip as base64 untouched unless max_dim is
+# passed; PIL is optional).
+
+aiohttp>=3.10,<4
+boto3>=1.35,<2
+
+# Optional: screenshot downscaling. Included so max_dim works out of the box.
+pillow>=11,<13

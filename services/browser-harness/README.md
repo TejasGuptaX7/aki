@@ -1,5 +1,48 @@
 # services/browser-harness
 
+> ## ⚠️ v1 deprecated — replaced by `proxy/` (v2)
+>
+> The self-hosted Chromium pool documented below is **deprecated**.
+> A replacement layer under [`proxy/`](./proxy/) routes per-`(org,
+> agent, platform)` to **Steel.dev** (free tier, OSS-friendly) and
+> **Browserbase** (production, auto-CAPTCHA). The wire contract for
+> the replacement is in [`PROTOCOL_v2.md`](./PROTOCOL_v2.md) — it's a
+> superset of v1's so the swap on the consumer side is "change
+> `browser_harness_url`" and nothing else.
+>
+> **Deletion date for this v1 code**: 2026-08-15 (90 days from
+> 2026-05-17 cut-over). Until then, both stacks run in parallel on
+> different Fly apps. The control plane's `browser_harness_url`
+> setting is the switch.
+>
+> | Concern | v1 (this file) | v2 ([proxy/](./proxy/)) |
+> |---|---|---|
+> | Browser source | local Chromium per agent | remote Steel / Browserbase |
+> | Image size | ~1.2 GB (chromium bundled) | ~120 MB (pure Python) |
+> | Cold start | 2–4 s (Chromium spawn) | 0.6–1.5 s (REST + WS) |
+> | CAPTCHA | detect → `captcha_required` | same + Browserbase auto-solver |
+> | Profile key | `(org, agent)` | `(org, agent, platform)` — separate Gmail/LinkedIn/Notion contexts |
+> | Skills | `skills/_shared/*.py` exec'd in-process | stubbed in v2.0.0; reintroduced in v2.1 |
+>
+> **Migration path** for any consumer today (just `materialize.py`):
+> change the URL setting from `browser_harness_url=http://aki-browser-harness.internal:7900`
+> to `browser_harness_url=http://aki-browser-harness-v2.internal:7900`.
+> No code change in the integrator; the v2 endpoint accepts the same
+> `Authorization` / `X-Aki-Org-Id` / `X-Aki-Agent-Id` headers and
+> exposes the same MCP tool names. Read [PROTOCOL_v2.md §8](./PROTOCOL_v2.md#8-registration-in-materializepy)
+> for the one-line `Settings` change.
+>
+> See the [v2 Quickstart](#v2-quickstart-stelbrowserbase) section
+> below before anything in the v1 docs.
+
+---
+
+## v1 (deprecated) — Self-hosted browser harness
+
+The text below documents v1 as it shipped. Useful as a reference until
+the v1 Fly app is torn down on 2026-08-15. Don't add new consumers
+against it — point them at v2.
+
 Self-hosted browser harness for Aki autonomous agents. Each agent gets its
 own long-lived headless Chromium + persistent per-agent profile. The service
 exposes browser primitives (navigate, click, type, extract, run skill) as
@@ -13,17 +56,140 @@ MCP tools over HTTP so Hermes can call them like any other connector.
 
 ```
 services/browser-harness/
-├── server.py            # aiohttp MCP server (JSON-RPC 2.0 over HTTP)
-├── pool.py              # per-(org, agent) Chromium + bh-daemon pool
-├── storage.py           # R2/S3 push-pull of cookies + localStorage + IDB
-├── skills/              # per-agent skill PR target (mount as volume in prod)
+├── server.py            # v1 aiohttp MCP server (deprecated; runs the Chromium pool)
+├── pool.py              # v1 per-(org, agent) Chromium + bh-daemon pool
+├── storage.py           # v1 R2/S3 push-pull of cookies + localStorage + IDB
+├── skills/              # per-agent skill PR target (v1 only; v2 stub in 2.0)
 │   └── _shared/         # global fallback skills (e.g. google_search.py)
-├── PROTOCOL.md          # integration contract — read this for materialize.py
-├── Dockerfile           # aki-browser-harness:0.1.0
-├── docker-compose.yml   # local dev: harness + minio (R2 emulator)
+├── proxy/               # v2 replacement — Steel + Browserbase
+│   ├── server.py        # v2 aiohttp MCP server (thin proxy)
+│   ├── pool.py          # v2 per-(org, agent, platform) session pool
+│   ├── router.py        # host pattern → (platform, backend) decision
+│   ├── steel_adapter.py
+│   ├── browserbase_adapter.py
+│   ├── profile_store.py # R2-backed manifest store (vendor ids only)
+│   ├── cdp.py           # async CDP WS client (~200 LOC)
+│   ├── Dockerfile       # aki-browser-harness-v2:0.1.0
+│   └── requirements.txt
+├── PROTOCOL.md          # v1 wire contract (deprecated)
+├── PROTOCOL_v2.md       # v2 wire contract — read this for new integrations
+├── Dockerfile           # v1 image (deprecated)
+├── docker-compose.yml   # v1 local dev stack (deprecated)
+├── scripts/
+│   ├── setup-r2.sh
+│   ├── smoke-test-prod.sh   # v1 smoke
+│   └── smoke-test-v2.sh     # v2 smoke (Steel + Browserbase)
 ├── requirements.txt
 └── README.md            # you are here
 ```
+
+## v2 Quickstart (Steel/Browserbase)
+
+The v2 proxy needs three secrets at runtime:
+
+| Env var | Where from |
+|---|---|
+| `BROWSER_HARNESS_API_KEY` | shared secret with the API gateway (same as v1) |
+| `STEEL_API_KEY` | https://app.steel.dev → Settings → API Keys |
+| `BROWSERBASE_API_KEY` + `BROWSERBASE_PROJECT_ID` | https://browserbase.com/settings (Developer plan, $20/mo) |
+
+Plus the same R2 vars as v1 if you want the per-(org, agent, platform)
+manifests to persist across replicas (`BROWSER_HARNESS_R2_*`).
+
+### Founder signup walkthrough
+
+**Steel.dev — free tier (5 concurrent sessions, 15 min/session, $0.10/hr after free):**
+1. Visit https://app.steel.dev — sign up with Google or email
+2. Settings → API Keys → "Create new key", name it `aki-prod`
+3. Copy the key (shown once); paste into `STEEL_API_KEY`
+4. Free tier needs no card; upgrade to Hobby/Starter only when you
+   exceed 500 requests/day or want sessions > 15 min
+
+**Browserbase — Developer plan ($20/mo, 25 concurrent, 100 browser-hrs/mo, auto-CAPTCHA included):**
+1. Visit https://browserbase.com/sign-up — sign up with Google
+2. Skip the "Free" CTA and pick **Developer** ($20/mo). Free tier has
+   no CAPTCHA solver, which defeats the reason we're using Browserbase
+   for `linkedin`/`twitter`/CF-protected targets in the first place.
+3. Add a card; Browserbase charges monthly + overage at $0.12/hr above 100 hrs
+4. Settings → API Keys → "Create new key" → copy into `BROWSERBASE_API_KEY`
+5. Settings → Projects → copy the project id into `BROWSERBASE_PROJECT_ID`
+6. (Optional) Settings → Stealth → enable "Advanced Stealth Mode" globally —
+   v2.0 sends `solveCaptchas:true` by default but advanced stealth is per-project
+
+The agent will create accounts at Steel and Browserbase on the
+founder's behalf only when the founder runs the signup steps above.
+This service code never embeds vendor credentials at build time;
+every key flows through Fly secrets / `.env` at runtime.
+
+### Local smoke
+
+```bash
+cd services/browser-harness/proxy
+pip install -r requirements.txt
+
+export BROWSER_HARNESS_API_KEY=dev-secret
+export STEEL_API_KEY=...
+export BROWSERBASE_API_KEY=...
+export BROWSERBASE_PROJECT_ID=...
+
+python server.py           # listens on :7901
+```
+
+In another shell:
+
+```bash
+BROWSER_HARNESS_URL=http://localhost:7901 \
+BROWSER_HARNESS_API_KEY=dev-secret \
+STEEL_API_KEY=$STEEL_API_KEY \
+BROWSERBASE_API_KEY=$BROWSERBASE_API_KEY \
+BROWSERBASE_PROJECT_ID=$BROWSERBASE_PROJECT_ID \
+  bash services/browser-harness/scripts/smoke-test-v2.sh
+```
+
+The smoke test (4 steps × 2 vendors):
+1. **Steel run** — navigate `example.com` via the `default` platform
+   (Steel by default routing); `extract_text` confirms "Example Domain";
+   `list_platforms` confirms `backend=steel`
+2. **Browserbase run** — navigate `example.com` with `X-Aki-Platform:
+   linkedin` (linkedin → Browserbase per the default table); set a
+   cookie via `js`; `release_platform persist=true`; re-navigate; verify
+   the cookie **persisted across the release** (proves the Browserbase
+   Context did its job)
+
+Output ends with `both runs passed` on success. Cleans up vendor
+sessions in a trap so a failed run doesn't leak billable time.
+
+### Fly deploy (v2)
+
+The v2 image is small enough that a dedicated app is the cleanest split:
+
+```bash
+flyctl apps create aki-browser-harness-v2
+flyctl secrets set --app aki-browser-harness-v2 \
+  BROWSER_HARNESS_API_KEY="$(openssl rand -hex 32)" \
+  STEEL_API_KEY="..." \
+  BROWSERBASE_API_KEY="..." \
+  BROWSERBASE_PROJECT_ID="..." \
+  BROWSER_HARNESS_R2_ENDPOINT="https://<acct>.r2.cloudflarestorage.com" \
+  BROWSER_HARNESS_R2_BUCKET="aki-browser-profiles" \
+  BROWSER_HARNESS_R2_ACCESS_KEY="..." \
+  BROWSER_HARNESS_R2_SECRET_KEY="..." \
+  BROWSER_HARNESS_R2_REGION="auto"
+
+# Build + deploy from the proxy/ dir (no Chromium → fast build)
+flyctl deploy --app aki-browser-harness-v2 \
+  --dockerfile services/browser-harness/proxy/Dockerfile \
+  --config services/browser-harness/proxy/fly.toml    # NOT included here; see PROTOCOL_v2 for the Fly recipe
+```
+
+> A dedicated `proxy/fly.toml` isn't shipped in this commit — v2 only
+> needs one machine (no per-region Chromium to pin since the browsers
+> live at the vendor), so the v1 fly.toml is too heavy. The integrator
+> can either reuse v1's fly.toml stripped down to one shared-cpu-1x /
+> 512 MB machine, or wait for the v2 deploy bundle that lands with the
+> v1 retirement PR.
+
+---
 
 ## How it works
 
