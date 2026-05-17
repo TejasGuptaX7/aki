@@ -39,7 +39,7 @@ from app.config import get_settings
 from app.consent import Tier, tier_for_tool
 from app.db import session_for_org
 from app.middleware import get_principal, get_session
-from app.models import Agent
+from app.models import Agent, ChatMessage
 from app.pricing import estimate_cost_usd
 from app.rate_limits import Kind as RLKind, enforce_daily_cap, record_usage
 
@@ -75,6 +75,26 @@ def _parse_sse_blocks(chunk_buf: str):
             blocks.append((event, "\n".join(data_lines)))
 
 
+def _last_user_message(body_dict: dict) -> str | None:
+    """Pluck the final user-role message from the request's `messages` array,
+    if any. That's the new turn we want to persist; everything before it is
+    history the frontend re-sent for context."""
+    msgs = (body_dict or {}).get("messages") or []
+    for m in reversed(msgs):
+        if (m or {}).get("role") == "user":
+            content = m.get("content")
+            # OpenAI allows content as a list of content-parts for vision;
+            # join the text parts for chat-history display.
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                parts = [p.get("text", "") for p in content
+                         if isinstance(p, dict) and p.get("type") == "text"]
+                return "".join(parts) or None
+            return None
+    return None
+
+
 async def _flush_audit(
     org_id: UUID,
     agent_id: UUID,
@@ -83,6 +103,7 @@ async def _flush_audit(
     tool_events: list[dict],
     final_usage: dict | None,
     duration_ms: int,
+    assistant_content: str,
 ) -> None:
     """Open a fresh session and write tool_call + chat.complete rows.
 
@@ -164,6 +185,22 @@ async def _flush_audit(
         except Exception:
             log.exception("rate_limits record_usage failed")
 
+        # Persist the assistant's response for chat-history GETs. Tool-call
+        # contents stay in the audit log; this table holds only the visible
+        # text the user saw. Empty content (agent ran tools, said nothing)
+        # is still persisted so refresh-history shows that the turn happened.
+        try:
+            db.add(
+                ChatMessage(
+                    organization_id=org_id,
+                    agent_id=agent_id,
+                    role="assistant",
+                    content=assistant_content or "",
+                )
+            )
+        except Exception:
+            log.exception("chat_messages assistant persist failed")
+
         await db.commit()
 
 
@@ -225,6 +262,25 @@ async def chat_completions(
     body = await request.body()
     body = _inject_system_prompt(body, agent.system_prompt)
 
+    # Persist the user's new turn so chat history GETs reflect what was
+    # asked even if the chat fails mid-stream. The history-aware messages
+    # array the frontend sent us is the source; we pluck the LAST user
+    # role entry as the new turn.
+    try:
+        body_dict = json.loads(body) if body else {}
+    except Exception:
+        body_dict = {}
+    user_text = _last_user_message(body_dict)
+    if user_text:
+        db.add(
+            ChatMessage(
+                organization_id=principal.organization_id,
+                agent_id=agent.id,
+                role="user",
+                content=user_text,
+            )
+        )
+
     container: OrgContainer = await ensure_agent_loaded(
         db, principal.organization_id, agent.id
     )
@@ -254,6 +310,7 @@ async def chat_completions(
     async def stream():
         tool_events: list[dict] = []
         final_usage: dict | None = None
+        assistant_parts: list[str] = []
         tail = ""
 
         try:
@@ -282,14 +339,27 @@ async def chat_completions(
                                 continue
                             if event and event.startswith("hermes.tool"):
                                 tool_events.append(obj)
-                            elif isinstance(obj, dict) and "usage" in obj:
-                                final_usage = obj["usage"]
+                            elif isinstance(obj, dict):
+                                if "usage" in obj:
+                                    final_usage = obj["usage"]
+                                # Accumulate visible content for the
+                                # persisted assistant message. OpenAI shape:
+                                # choices[0].delta.content is a string per
+                                # chunk; tool-call deltas live elsewhere
+                                # and are intentionally NOT captured here.
+                                choices = obj.get("choices") or []
+                                if choices:
+                                    delta = (choices[0] or {}).get("delta") or {}
+                                    piece = delta.get("content")
+                                    if isinstance(piece, str) and piece:
+                                        assistant_parts.append(piece)
         finally:
             duration_ms = int((time.monotonic() - started) * 1000)
             try:
                 await _flush_audit(
                     org_id, agent.id, actor, container_id,
                     tool_events, final_usage, duration_ms,
+                    "".join(assistant_parts),
                 )
             except Exception:
                 log.exception("audit flush failed")

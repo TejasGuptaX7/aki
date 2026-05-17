@@ -6,11 +6,14 @@ system prompt, own memory namespace, own connections scope. See
 boundary this lives inside.
 
 Routes:
-  POST   /agents          create
-  GET    /agents          list (active first, then hibernated; deleted hidden)
-  GET    /agents/{id}     detail (includes full system_prompt)
-  PATCH  /agents/{id}     update name / system_prompt
-  DELETE /agents/{id}     soft delete (status='deleted'); refuses if last active
+  POST   /agents                       create
+  GET    /agents                       list (active first, then hibernated)
+  GET    /agents/templates             list curated starter templates
+  POST   /agents/from-template/{key}   create from a template
+  GET    /agents/{id}                  detail (includes full system_prompt)
+  PATCH  /agents/{id}                  update name / system_prompt
+  DELETE /agents/{id}                  soft delete (status='deleted')
+  GET    /agents/{id}/messages         chat history (chronological)
 
 The slug is the URL- and Slack-mention-safe handle. Generated from name,
 auto-disambiguated on collision (sales, sales-2, sales-3, …). Once set
@@ -24,15 +27,16 @@ import re
 from typing import Annotated
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Path, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent_templates import TEMPLATES, get_template, list_templates
 from app.audit import append_audit
 from app.auth import Principal
 from app.middleware import get_principal, get_session
-from app.models import Agent
+from app.models import Agent, ChatMessage
 
 
 router = APIRouter(prefix="/agents", tags=["agents"])
@@ -214,6 +218,121 @@ async def list_agents(
         )
     ).scalars().all()
     return [_summary(a) for a in rows]
+
+
+# ── Templates (must be registered BEFORE /{agent_id} so FastAPI doesn't
+#    try to parse "templates" or "from-template" as a UUID) ────────────────
+
+
+@router.get("/templates")
+async def list_agent_templates(
+    principal: Principal = Depends(get_principal),
+) -> list[dict]:
+    return list_templates()
+
+
+class FromTemplateBody(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+
+    @field_validator("name")
+    @classmethod
+    def _name_not_blank(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        if not v.strip():
+            raise ValueError("name cannot be blank")
+        return v.strip()
+
+
+@router.post("/from-template/{template_key}", status_code=status.HTTP_201_CREATED)
+async def create_from_template(
+    template_key: Annotated[str, Path(min_length=1, max_length=64)],
+    body: FromTemplateBody | None = None,
+    principal: Principal = Depends(get_principal),
+    db: AsyncSession = Depends(get_session),
+) -> dict:
+    tmpl = get_template(template_key)
+    if tmpl is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            f"no template '{template_key}'; see GET /agents/templates",
+        )
+
+    name = (body.name if body and body.name else tmpl["name"])
+    base = _slugify(name)
+    slug = await _unique_slug(db, principal.organization_id, base)
+
+    agent = Agent(
+        id=uuid4(),
+        organization_id=principal.organization_id,
+        name=name,
+        slug=slug,
+        system_prompt=tmpl["system_prompt"],
+        status="active",
+    )
+    db.add(agent)
+    await db.flush()
+    await append_audit(
+        db,
+        principal.organization_id,
+        actor=principal.user_id,
+        action="agent.create_from_template",
+        target=str(agent.id),
+        payload={
+            "template_key": tmpl["key"],
+            "name": agent.name,
+            "slug": agent.slug,
+        },
+        agent_id=agent.id,
+    )
+    await db.commit()
+    await db.refresh(agent)
+    return _detail(agent)
+
+
+# ── Per-agent sub-resources ────────────────────────────────────────────────
+
+
+@router.get("/{agent_id}/messages")
+async def list_chat_messages(
+    agent_id: Annotated[UUID, Path()],
+    limit: int = Query(200, ge=1, le=1000),
+    before_id: int | None = Query(
+        None, description="paginate older — return id < before_id"
+    ),
+    principal: Principal = Depends(get_principal),
+    db: AsyncSession = Depends(get_session),
+) -> list[dict]:
+    """Chat history for one agent, newest-first by id (the FE reverses
+    for chronological display). Soft-deleted agents still expose their
+    history so audits aren't lost."""
+    agent = await db.scalar(
+        select(Agent).where(
+            Agent.id == agent_id,
+            Agent.organization_id == principal.organization_id,
+        )
+    )
+    if agent is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
+
+    q = select(ChatMessage).where(
+        ChatMessage.organization_id == principal.organization_id,
+        ChatMessage.agent_id == agent_id,
+    )
+    if before_id is not None:
+        q = q.where(ChatMessage.id < before_id)
+    q = q.order_by(ChatMessage.id.desc()).limit(limit)
+
+    rows = (await db.execute(q)).scalars().all()
+    return [
+        {
+            "id": r.id,
+            "role": r.role,
+            "content": r.content,
+            "created_at": r.created_at.isoformat(),
+        }
+        for r in rows
+    ]
 
 
 @router.get("/{agent_id}")

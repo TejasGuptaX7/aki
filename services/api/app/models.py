@@ -153,6 +153,23 @@ class RateLimit(Base):
     llm_cents: Mapped[int] = mapped_column(Integer, default=0)
 
 
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    organization_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("organizations.id", ondelete="cascade")
+    )
+    agent_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("agents.id", ondelete="cascade")
+    )
+    role: Mapped[str] = mapped_column(String(16))
+    content: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class Approval(Base):
     __tablename__ = "approvals"
 
