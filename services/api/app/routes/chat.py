@@ -32,6 +32,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import live_state
 from app.agent_runtime import OrgContainer, ensure_agent_loaded
 from app.audit import append_audit
 from app.auth import Principal
@@ -203,6 +204,10 @@ async def _flush_audit(
 
         await db.commit()
 
+    # Inspector Board tile flips to "Done"; the entry self-evicts after
+    # the live_state TTL (~90s) so the tile returns to "Idle" naturally.
+    live_state.record_turn_complete(org_id, agent_id)
+
 
 def _inject_system_prompt(body_bytes: bytes, prompt: str) -> bytes:
     """Prepend `prompt` as a system message only if the request has no
@@ -296,6 +301,9 @@ async def chat_completions(
     )
     await db.commit()
 
+    # Inspector Board tile flips to "Thinking" the moment a chat starts.
+    live_state.record_turn_start(principal.organization_id, agent.id)
+
     headers = {
         "Authorization": f"Bearer {container.supervisor_api_key}",
         "Content-Type": request.headers.get("Content-Type", "application/json"),
@@ -339,6 +347,14 @@ async def chat_completions(
                                 continue
                             if event and event.startswith("hermes.tool"):
                                 tool_events.append(obj)
+                                # Update live state so /agents/board tiles
+                                # surface the active tool to the user.
+                                live_state.record_tool_call(
+                                    org_id, agent.id,
+                                    (obj or {}).get("label")
+                                    or (obj or {}).get("tool")
+                                    or "tool",
+                                )
                             elif isinstance(obj, dict):
                                 if "usage" in obj:
                                     final_usage = obj["usage"]

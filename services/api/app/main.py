@@ -18,6 +18,7 @@ from app.routes import (
     agents,
     approvals,
     audit,
+    billing,
     chat,
     connections,
     health,
@@ -109,4 +110,5 @@ app.include_router(audit.router)
 app.include_router(approvals.router)
 app.include_router(agent_internal.router)
 app.include_router(memory.router)
+app.include_router(billing.router)
 app.include_router(slack.router)

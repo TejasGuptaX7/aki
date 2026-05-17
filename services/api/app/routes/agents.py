@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from datetime import datetime, timezone
 
+from app import live_state
 from app.agent_templates import TEMPLATES, get_template, list_templates
 from app.agent_runtime import _REGISTRY as _ORG_CONTAINERS
 from app.audit import append_audit
@@ -292,6 +293,8 @@ async def board(
             label = payload.get("label") or payload.get("tool") or last_audit.action
             last_action = str(label)[:80]
 
+        live = live_state.get_state(principal.organization_id, a.id)
+
         out.append({
             "id": str(a.id),
             "name": a.name,
@@ -302,6 +305,10 @@ async def board(
             "last_action": last_action,
             "last_active_at": last_active_at,
             "hibernated_at": a.hibernated_at.isoformat() if a.hibernated_at else None,
+            # Live in-memory state (None when the agent isn't currently
+            # processing a turn). FE renders pulsing dot + current step
+            # when this is non-null.
+            "live": live,
         })
     return out
 
