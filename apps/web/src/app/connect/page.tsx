@@ -374,8 +374,12 @@ async function connectViaPipedream({ appSlug, agentId, tok, onDone, onError, onC
 }
 
 const CATALOG: CatalogItem[] = [
-  { provider: "slack", appSlug: "slack", name: "Slack", kind: "pipedream",
-    blurb: "Read messages, post replies, manage channels and DMs.",
+  // Pipedream's `slack` app is user-OAuth (acts as the human). We use the
+  // bot variant exclusively so agent posts come from "Aki", not from the
+  // installer. If `slack_bot` ever gets renamed in Pipedream's catalog,
+  // this is the one string to change.
+  { provider: "slack_bot", appSlug: "slack_bot", name: "Slack (as a bot)", kind: "pipedream",
+    blurb: "Installs Aki as a workspace bot — messages come from Aki, not from you.",
     glyph: <ProviderGlyph color="#611f69">S</ProviderGlyph> },
   { provider: "gmail", appSlug: "gmail", name: "Gmail", kind: "pipedream",
     blurb: "Read, draft, send, label, and search.",
