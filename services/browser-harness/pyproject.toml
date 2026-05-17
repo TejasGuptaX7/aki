@@ -1,0 +1,14 @@
+[project]
+name = "aki-browser-harness"
+version = "0.1.0"
+description = "Self-hosted browser harness for Aki autonomous agents (MCP over HTTP)."
+requires-python = ">=3.12"
+dependencies = [
+    "browser-harness==0.1.0",
+    "aiohttp>=3.10,<4",
+    "boto3>=1.35,<2",
+    "pillow>=11,<13",
+]
+
+[tool.setuptools]
+py-modules = ["server", "pool", "storage"]

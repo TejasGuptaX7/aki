@@ -7,6 +7,11 @@ later means walking from row 1 forward and recomputing each hash.
 
 Per-org serialization is enforced with a transaction-scoped advisory lock so
 concurrent inserts can't race and pick the same prev_hash.
+
+`agent_id` is part of the row but NOT part of the hash input — historically
+audit rows existed without it (Phase 2a–2c), and changing the hash schema
+retroactively would break chain verification on any existing row. New rows
+keep the original hash shape; agent_id is queryable metadata only.
 """
 from __future__ import annotations
 
@@ -53,9 +58,16 @@ async def append_audit(
     action: str,
     target: str | None = None,
     payload: dict[str, Any] | None = None,
+    *,
+    agent_id: UUID | None = None,
 ) -> AuditLog:
     """Append one audit row. Caller is responsible for the surrounding
-    transaction (commit/rollback). RLS GUC must already be set for `org_id`."""
+    transaction (commit/rollback). RLS GUC must already be set for `org_id`.
+
+    `agent_id` should be set for any event scoped to a specific agent
+    (chat.*, approval.*, browser.*) and left NULL for org-level events
+    (org.*, oauth.*, webhook.*).
+    """
     payload = payload or {}
 
     # Advisory lock keyed on org so concurrent appends serialize.
@@ -78,6 +90,7 @@ async def append_audit(
 
     row = AuditLog(
         organization_id=org_id,
+        agent_id=agent_id,
         actor=actor,
         action=action,
         target=target,

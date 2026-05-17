@@ -2,8 +2,14 @@
 
 RLS scopes this automatically to the org via the session GUC. The hash chain
 fields are included so a client can verify the chain locally.
+
+Optional `agent_id` filter narrows to events scoped to one agent (chat.*,
+approval.*, etc.). Org-level events (org.create, oauth.*) carry NULL agent_id
+and are returned only when no filter is set.
 """
 from __future__ import annotations
+
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
@@ -20,12 +26,21 @@ router = APIRouter(prefix="/audit", tags=["audit"])
 @router.get("")
 async def list_audit(
     limit: int = Query(50, ge=1, le=200),
-    after_id: int | None = Query(None, description="return rows with id > after_id (forward paging)"),
-    before_id: int | None = Query(None, description="return rows with id < before_id (backward paging)"),
+    after_id: int | None = Query(
+        None, description="return rows with id > after_id (forward paging)"
+    ),
+    before_id: int | None = Query(
+        None, description="return rows with id < before_id (backward paging)"
+    ),
+    agent_id: UUID | None = Query(
+        None, description="filter to events scoped to one agent"
+    ),
     principal: Principal = Depends(get_principal),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
     q = select(AuditLog).where(AuditLog.organization_id == principal.organization_id)
+    if agent_id is not None:
+        q = q.where(AuditLog.agent_id == agent_id)
     if after_id is not None:
         q = q.where(AuditLog.id > after_id).order_by(AuditLog.id.asc())
     else:
@@ -42,6 +57,7 @@ async def list_audit(
         "items": [
             {
                 "id": r.id,
+                "agent_id": str(r.agent_id) if r.agent_id else None,
                 "actor": r.actor,
                 "action": r.action,
                 "target": r.target,

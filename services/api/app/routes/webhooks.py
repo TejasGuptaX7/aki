@@ -1,9 +1,9 @@
 """Inbound webhooks.
 
 POST /webhooks/clerk — Clerk fires this on user.created, user.updated, etc.
-The handler is the *one* place an org and its first user are provisioned
-together: same transaction, plus a default org_memory row and a Composio
-entity. Idempotent on clerk_user_id so replays are safe.
+The handler is the *one* place an org, its first user, and the org's default
+"Aki" agent are provisioned together — same transaction, idempotent on
+clerk_user_id so replays are safe.
 
 Verified via svix (Clerk uses Svix for webhook signing).
 """
@@ -20,7 +20,9 @@ from app.clerk_client import update_user_public_metadata
 from app.config import get_settings
 from app.db import session_for_org, SessionLocal
 from app.limits import limiter
-from app.models import Organization, OrgMemory, User
+from app.models import Agent, AgentMemory, Organization, User
+from app.rate_limits import check_global_circuit_breaker
+from app.routes.agents import DEFAULT_SYSTEM_PROMPT
 
 
 log = logging.getLogger(__name__)
@@ -78,6 +80,12 @@ async def clerk_webhook(request: Request) -> None:
         if existing:
             return  # idempotent replay
 
+        # Global circuit breaker: if the platform is over today's spend cap,
+        # refuse new signups. svix will retry the webhook; when we're back
+        # under-budget, the retry succeeds and the user is provisioned.
+        # Existing users keep working — only NEW orgs get gated.
+        await check_global_circuit_breaker(db)
+
         org = Organization(id=uuid4(), name=_domain_from_email(email))
         db.add(org)
         await db.flush()
@@ -97,20 +105,36 @@ async def clerk_webhook(request: Request) -> None:
             organization_id=org.id,
         )
         db.add(user)
+
+        # Every org gets a default agent named "Aki" so the chat surface is
+        # usable from the first sign-in. The user can rename it, create more,
+        # or delete it later (as long as one active agent remains).
+        default_agent = Agent(
+            id=uuid4(),
+            organization_id=org.id,
+            name="Aki",
+            slug="aki",
+            system_prompt=DEFAULT_SYSTEM_PROMPT.format(name="Aki"),
+            status="active",
+        )
+        db.add(default_agent)
+        await db.flush()
+
         db.add(
-            OrgMemory(
+            AgentMemory(
                 id=uuid4(),
                 organization_id=org.id,
+                agent_id=default_agent.id,
                 key="onboarding",
                 value=f"Org created for {email} on signup.",
             )
         )
         await db.commit()
 
-    # No Composio entity provisioning here — in v3 the entity is created
-    # implicitly when we first call composio.create(userId) (i.e. when the
-    # org's Hermes runtime materializes its MCP session, or when the first
-    # OAuth is initiated). org.id is the entity_id either way.
+    # No external-provider entity provisioning at signup. Pipedream Connect
+    # creates entities lazily on first /connections/pipedream/connect-token,
+    # using the org_id (or org_id:agent_id for per-agent) as the
+    # external_user_id. No upfront API call needed.
 
     # Push the new org_id into Clerk's user.public_metadata so the JWT
     # template's {{user.public_metadata.aki_org_id}} resolves on next sign-in.
