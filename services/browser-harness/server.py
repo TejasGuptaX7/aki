@@ -654,7 +654,7 @@ async def tool_run_skill(d: DaemonClient, args: dict) -> dict:
         raise ToolError("element_not_found", f"skill {name!r} not found")
     code = path.read_text()
     loop = asyncio.get_running_loop()
-    ns = _skill_namespace(d, skill_args, loop)
+    ns = _skill_namespace(d, skill_args, loop, skill_path=path)
     out = io.StringIO()
     compiled = compile(code, str(path), "exec")
 
@@ -670,6 +670,11 @@ async def tool_run_skill(d: DaemonClient, args: dict) -> dict:
     except ToolError:
         raise
     except Exception as e:
+        # Sentinel: skills that detect a captcha widget raise
+        # RuntimeError("captcha_required: …") so the structured signal
+        # propagates as code:captcha_required instead of skill_error.
+        if isinstance(e, RuntimeError) and str(e).startswith("captcha_required:"):
+            raise ToolError("captcha_required", str(e).split(":", 1)[1].strip())
         tb = traceback.format_exc(limit=4)
         raise ToolError("skill_error", str(e), traceback=tb.splitlines()[-4:])
     return {
@@ -681,10 +686,19 @@ async def tool_run_skill(d: DaemonClient, args: dict) -> dict:
 
 async def tool_list_skills(d: DaemonClient, args: dict) -> dict:
     out = []
+    seen: set[str] = set()
     for base in (SKILLS_ROOT / d.sess.org_id / d.sess.agent_id, SKILLS_ROOT / SHARED_SKILLS_DIR):
         if not base.is_dir():
             continue
         for p in sorted(base.glob("*.py")):
+            # Underscore-prefixed files are helpers (load_helpers target);
+            # they're not directly callable as skills.
+            if p.stem.startswith("_"):
+                continue
+            # Per-agent skills shadow _shared/ skills of the same name.
+            if p.stem in seen:
+                continue
+            seen.add(p.stem)
             description = _skill_description(p)
             out.append({"name": p.stem, "path": str(p), "description": description})
     return {"skills": out}
@@ -1137,20 +1151,53 @@ def _skill_description(p: Path) -> Optional[str]:
     return None
 
 
-def _skill_namespace(d: DaemonClient, args: dict, loop: asyncio.AbstractEventLoop) -> dict:
+def _skill_namespace(
+    d: DaemonClient, args: dict, loop: asyncio.AbstractEventLoop,
+    *, skill_path: Optional[Path] = None,
+) -> dict:
     """Namespace exposed to skills. Helpers are *synchronous wrappers* that
     block on the daemon — skills shouldn't have to know about asyncio.
 
     `loop` is the event loop running the MCP server; the wrappers schedule
     coroutines on it via run_coroutine_threadsafe. The skill itself must
-    execute on a worker thread (see tool_run_skill)."""
+    execute on a worker thread (see tool_run_skill).
+
+    `skill_path` is set to the resolved skill file when known. We expose it
+    as `__file__` and provide a `load_helpers(name)` so skills can share
+    code (e.g. _signup_helpers.py for the cookie-banner / captcha defenses
+    every signup skill needs)."""
 
     def _sync(coro):
         return asyncio.run_coroutine_threadsafe(coro, loop).result()
 
+    def _load_helpers(name: str):
+        """Exec a sibling .py from the same skills dir into the caller's
+        namespace, so the helpers' functions become available as locals.
+
+        Usage from a skill:
+            load_helpers("_signup_helpers")
+            dismiss_cookie_banner()   # now defined in this namespace
+
+        Resolved against the caller's own directory first (per-agent
+        overrides), then SKILLS_ROOT/_shared/. Same lookup order as
+        _resolve_skill itself."""
+        if not SKILL_NAME_RE.match(name):
+            raise ValueError(f"invalid helper name {name!r}")
+        candidates = []
+        if skill_path is not None:
+            candidates.append(skill_path.parent / f"{name}.py")
+        candidates.append(SKILLS_ROOT / SHARED_SKILLS_DIR / f"{name}.py")
+        for p in candidates:
+            if p.is_file():
+                exec(compile(p.read_text(), str(p), "exec"), ns, ns)
+                return
+        raise FileNotFoundError(f"helper {name!r} not found in skill dirs")
+
     ns: dict[str, Any] = {
         "args": args, "result": None,
         "session": d.sess,
+        "__file__": str(skill_path) if skill_path else "<skill>",
+        "load_helpers": _load_helpers,
         # Browser primitives, sync interface
         "navigate": lambda url, **kw: _sync(tool_navigate(d, {"url": url, **kw})),
         "click": lambda x, y, **kw: _sync(tool_click(d, {"x": x, "y": y, **kw})),
@@ -1160,7 +1207,12 @@ def _skill_namespace(d: DaemonClient, args: dict, loop: asyncio.AbstractEventLoo
         "scroll": lambda x, y, dy=-300, dx=0: _sync(tool_scroll(d, {"x": x, "y": y, "dy": dy, "dx": dx})),
         "screenshot": lambda **kw: _sync(tool_screenshot(d, kw)),
         "extract_text": lambda **kw: _sync(tool_extract_text(d, kw)),
+        "extract_html": lambda **kw: _sync(tool_extract_html(d, kw)),
         "page_info": lambda: _sync(tool_page_info(d, {})),
+        "list_tabs": lambda **kw: _sync(tool_list_tabs(d, kw)),
+        "new_tab": lambda **kw: _sync(tool_new_tab(d, kw)),
+        "switch_tab": lambda target_id: _sync(tool_switch_tab(d, {"target_id": target_id})),
+        "close_tab": lambda **kw: _sync(tool_close_tab(d, kw)),
         "js": lambda expression, await_promise=True: _sync(tool_js(d, {"expression": expression, "await_promise": await_promise})),
         "wait_for_load": lambda timeout=15: _sync(tool_wait_for_load(d, {"timeout": timeout})),
         "wait_for_element": lambda selector, **kw: _sync(tool_wait_for_element(d, {"selector": selector, **kw})),
