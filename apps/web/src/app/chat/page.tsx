@@ -8,12 +8,14 @@ import { AppShell, ErrorBanner } from "@/components/AppShell";
 type Msg = { role: "user" | "assistant"; content: string; tools?: ToolEvent[] };
 type ToolEvent = { id: string; tool: string; status: string; label?: string };
 
+type Stage = "idle" | "connecting" | "waking" | "thinking" | "tools-active" | "streaming";
+
 /**
  * Chat surface over our /v1/chat/completions proxy.
  *
  * Parses OpenAI-format SSE chunks plus Hermes' inline tool.progress events.
  * No Vercel AI SDK — we want full control to surface tool events alongside
- * content deltas.
+ * content deltas, and to render a live "what's happening" status bar.
  */
 export default function ChatPage() {
   const { getToken } = useAuth();
@@ -21,13 +23,32 @@ export default function ChatPage() {
   const [input, setInput] = React.useState("");
   const [streaming, setStreaming] = React.useState("");
   const [tools, setTools] = React.useState<ToolEvent[]>([]);
-  const [pending, setPending] = React.useState(false);
+  const [stage, setStage] = React.useState<Stage>("idle");
+  const [startedAt, setStartedAt] = React.useState<number | null>(null);
   const [err, setErr] = React.useState<string | null>(null);
   const endRef = React.useRef<HTMLDivElement>(null);
+  const stageRef = React.useRef<Stage>("idle");
+  stageRef.current = stage;
 
   React.useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [history, streaming, tools]);
+  }, [history, streaming, tools, stage]);
+
+  // Tick once a second while pending so elapsed-time bumps. After the first
+  // 3 seconds with no first byte, escalate stage to 'waking' (cold-start hint).
+  const [now, setNow] = React.useState(Date.now());
+  React.useEffect(() => {
+    if (stage === "idle") return;
+    const t = setInterval(() => {
+      setNow(Date.now());
+      if (stageRef.current === "connecting" && startedAt && Date.now() - startedAt > 3000) {
+        setStage("waking");
+      }
+    }, 250);
+    return () => clearInterval(t);
+  }, [stage, startedAt]);
+
+  const pending = stage !== "idle";
 
   async function send() {
     const text = input.trim();
@@ -39,11 +60,11 @@ export default function ChatPage() {
     setInput("");
     setStreaming("");
     setTools([]);
-    setPending(true);
+    setStartedAt(Date.now());
+    setStage("connecting");
 
     try {
       const token = await getToken({ template: "aki" });
-      // Strip our local-only fields before sending upstream.
       const wire = turn.map(({ role, content }) => ({ role, content }));
       const r = await fetch(`${API_URL}/v1/chat/completions`, {
         method: "POST",
@@ -60,10 +81,15 @@ export default function ChatPage() {
       let tail = "";
       let assembled = "";
       const turnTools: ToolEvent[] = [];
+      let sawFirstByte = false;
 
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
+        if (!sawFirstByte) {
+          sawFirstByte = true;
+          setStage("thinking");
+        }
         tail += decoder.decode(value, { stream: true });
         let sep;
         while ((sep = tail.indexOf("\n\n")) !== -1) {
@@ -88,11 +114,14 @@ export default function ChatPage() {
               if (idx === -1) turnTools.push(entry);
               else turnTools[idx] = { ...turnTools[idx], ...entry, label: entry.label ?? turnTools[idx].label };
               setTools([...turnTools]);
+              // Tools active until all completed; we don't go back from streaming → tools-active.
+              if (stageRef.current !== "streaming") setStage("tools-active");
             } else if (typeof obj === "object" && obj !== null) {
               const delta = obj?.choices?.[0]?.delta?.content;
               if (typeof delta === "string") {
                 assembled += delta;
                 setStreaming(assembled);
+                setStage("streaming");
               }
             }
           } catch { /* ignore non-JSON SSE */ }
@@ -107,9 +136,13 @@ export default function ChatPage() {
     } catch (e: unknown) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
-      setPending(false);
+      setStage("idle");
+      setStartedAt(null);
     }
   }
+
+  const elapsed = startedAt ? Math.floor((now - startedAt) / 1000) : 0;
+  const activeTool = tools.find((t) => t.status !== "completed") ?? tools[tools.length - 1];
 
   return (
     <AppShell>
@@ -130,14 +163,16 @@ export default function ChatPage() {
 
         <div style={{ flex: 1, overflowY: "auto", padding: "40px 0" }}>
           <div style={{ maxWidth: 760, margin: "0 auto", padding: "0 32px" }}>
-            {history.length === 0 && !streaming && (
-              <EmptyChat/>
+            {history.length === 0 && stage === "idle" && <EmptyChat/>}
+            {history.map((m, i) => <MessageBlock key={i} msg={m}/>)}
+
+            {/* Status bar — shows live progress while a turn is in flight */}
+            {pending && (
+              <StatusBar stage={stage} elapsed={elapsed} activeTool={activeTool} toolCount={tools.length}/>
             )}
-            {history.map((m, i) => (
-              <MessageBlock key={i} msg={m}/>
-            ))}
+
             {streaming && <MessageBlock msg={{ role: "assistant", content: streaming, tools: tools.length ? tools : undefined }}/>}
-            {!streaming && tools.length > 0 && <ToolPanel tools={tools}/>}
+
             <div ref={endRef}/>
           </div>
         </div>
@@ -177,7 +212,7 @@ export default function ChatPage() {
                   opacity: pending || !input.trim() ? 0.5 : 1,
                 }}
               >
-                {pending ? "…" : "Send"}
+                {pending ? `${elapsed}s` : "Send"}
               </button>
             </div>
             <div style={{ marginTop: 8, fontFamily: theme.mono, fontSize: 10, color: theme.inkFaint, letterSpacing: "0.18em", textTransform: "uppercase" }}>
@@ -187,6 +222,67 @@ export default function ChatPage() {
         </div>
       </div>
     </AppShell>
+  );
+}
+
+function StatusBar({ stage, elapsed, activeTool, toolCount }: { stage: Stage; elapsed: number; activeTool?: ToolEvent; toolCount: number }) {
+  const { headline, sub } = describe(stage, elapsed, activeTool, toolCount);
+  return (
+    <div style={{
+      marginBottom: 24,
+      padding: "14px 18px",
+      background: theme.bgSoft,
+      border: `1px solid ${theme.hair}`,
+      borderLeft: `2px solid ${theme.accent}`,
+      display: "flex", alignItems: "center", gap: 16,
+    }}>
+      <Pulse/>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontFamily: theme.body, fontSize: 14, fontWeight: 500, color: theme.ink }}>
+          {headline}
+        </div>
+        {sub && (
+          <div style={{ marginTop: 4, fontFamily: theme.mono, fontSize: 11, color: theme.inkDim, wordBreak: "break-all" }}>
+            {sub}
+          </div>
+        )}
+      </div>
+      <div style={{ fontFamily: theme.mono, fontSize: 11, color: theme.inkFaint, letterSpacing: "0.18em" }}>
+        {elapsed}s
+      </div>
+    </div>
+  );
+}
+
+function describe(stage: Stage, elapsed: number, activeTool: ToolEvent | undefined, toolCount: number): { headline: string; sub?: string } {
+  if (stage === "connecting") return { headline: "Connecting to Aki…" };
+  if (stage === "waking") return {
+    headline: "Waking up your agent…",
+    sub: elapsed > 8 ? "first chat in 15+ minutes spins up a fresh container (~10s)" : "this happens after idle periods",
+  };
+  if (stage === "thinking") return { headline: "Thinking…" };
+  if (stage === "tools-active") {
+    return {
+      headline: activeTool ? `Running ${activeTool.tool}…` : "Calling tools…",
+      sub: activeTool?.label || (toolCount > 1 ? `${toolCount} tool calls so far` : undefined),
+    };
+  }
+  if (stage === "streaming") return { headline: "Streaming reply…" };
+  return { headline: "Working…" };
+}
+
+function Pulse() {
+  return (
+    <span style={{
+      width: 8, height: 8, borderRadius: "50%", background: theme.accent,
+      animation: "akiPulse 1.4s ease-in-out infinite",
+      boxShadow: `0 0 0 0 ${theme.accent}`,
+    }}>
+      <style>{`@keyframes akiPulse {
+        0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(197,236,79,0.6); }
+        50% { opacity: 0.5; box-shadow: 0 0 0 8px rgba(197,236,79,0); }
+      }`}</style>
+    </span>
   );
 }
 
@@ -226,19 +322,18 @@ function MessageBlock({ msg }: { msg: Msg }) {
         {isUser ? "you" : "aki"}
       </div>
       <div style={{
-        fontFamily: isUser ? theme.body : theme.body, fontSize: 16, lineHeight: 1.6,
+        fontFamily: theme.body, fontSize: 16, lineHeight: 1.6,
         color: isUser ? theme.inkLede : theme.ink,
         whiteSpace: "pre-wrap", wordBreak: "break-word",
       }}>
         {msg.content || (isUser ? "" : <span style={{ color: theme.inkFaint }}>…</span>)}
       </div>
-      {msg.tools && msg.tools.length > 0 && <ToolPanel tools={msg.tools} compact/>}
+      {msg.tools && msg.tools.length > 0 && <ToolPanel tools={msg.tools}/>}
     </div>
   );
 }
 
-function ToolPanel({ tools, compact }: { tools: ToolEvent[]; compact?: boolean }) {
-  // Group by toolCallId so running/completed pairs render as one row.
+function ToolPanel({ tools }: { tools: ToolEvent[] }) {
   const grouped: Record<string, ToolEvent> = {};
   for (const t of tools) {
     grouped[t.id] = { ...grouped[t.id], ...t, label: t.label ?? grouped[t.id]?.label };
@@ -246,7 +341,7 @@ function ToolPanel({ tools, compact }: { tools: ToolEvent[]; compact?: boolean }
   const rows = Object.values(grouped);
   return (
     <div style={{
-      marginTop: compact ? 12 : 16,
+      marginTop: 12,
       padding: "12px 16px",
       background: "rgba(197,236,79,0.04)",
       border: `1px solid ${theme.accentDim}`,
