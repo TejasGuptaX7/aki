@@ -66,14 +66,32 @@ export default function ChatPage() {
     try {
       const token = await getToken({ template: "aki" });
       const wire = turn.map(({ role, content }) => ({ role, content }));
-      const r = await fetch(`${API_URL}/v1/chat/completions`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ model: "hermes-agent", messages: wire, stream: true }),
-      });
+
+      // Frontend timeout: if the backend stalls (cold-start failure,
+      // Composio down, etc.) the user shouldn't sit on "Connecting…"
+      // forever. 90s ceiling covers worst-case cold-start + first turn.
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 90_000);
+
+      let r: Response;
+      try {
+        r = await fetch(`${API_URL}/v1/chat/completions`, {
+          method: "POST",
+          signal: controller.signal,
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ model: "hermes-agent", messages: wire, stream: true }),
+        });
+      } catch (fetchErr: unknown) {
+        if (fetchErr instanceof Error && fetchErr.name === "AbortError") {
+          throw new Error("Request timed out after 90s. The agent container may have failed to start. Try again, or check the backend logs.");
+        }
+        throw fetchErr;
+      } finally {
+        clearTimeout(timeoutId);
+      }
       if (!r.ok || !r.body) throw new Error(`chat ${r.status}: ${await r.text()}`);
 
       const reader = r.body.getReader();
@@ -149,7 +167,7 @@ export default function ChatPage() {
       <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
         <div style={{ padding: "20px 56px", borderBottom: `1px solid ${theme.hair}`, display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
           <div style={{ fontFamily: theme.mono, fontSize: 11, letterSpacing: "0.24em", textTransform: "uppercase", color: theme.inkFaint }}>
-            chat · streaming
+            chat
           </div>
           <button onClick={() => { setHistory([]); setTools([]); setStreaming(""); setErr(null); }} style={{
             background: "transparent", color: theme.inkDim,
@@ -163,7 +181,7 @@ export default function ChatPage() {
 
         <div style={{ flex: 1, overflowY: "auto", padding: "40px 0" }}>
           <div style={{ maxWidth: 760, margin: "0 auto", padding: "0 32px" }}>
-            {history.length === 0 && stage === "idle" && <EmptyChat/>}
+            {history.length === 0 && stage === "idle" && <EmptyChat onPick={(t) => setInput(t)}/>}
             {history.map((m, i) => <MessageBlock key={i} msg={m}/>)}
 
             {/* Status bar — shows live progress while a turn is in flight */}
@@ -212,7 +230,7 @@ export default function ChatPage() {
                   opacity: pending || !input.trim() ? 0.5 : 1,
                 }}
               >
-                {pending ? `${elapsed}s` : "Send"}
+                {pending ? "…" : "Send"}
               </button>
             </div>
             <div style={{ marginTop: 8, fontFamily: theme.mono, fontSize: 10, color: theme.inkFaint, letterSpacing: "0.18em", textTransform: "uppercase" }}>
@@ -280,7 +298,7 @@ function Pulse() {
   );
 }
 
-function EmptyChat() {
+function EmptyChat({ onPick }: { onPick: (text: string) => void }) {
   const examples = [
     "List my 5 most recent emails — just sender and subject.",
     "Find anything about 'invoice' from the last 14 days.",
@@ -293,15 +311,20 @@ function EmptyChat() {
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 10, maxWidth: 560, margin: "0 auto" }}>
         {examples.map((e) => (
-          <div key={e} style={{
+          <button key={e} onClick={() => onPick(e)} style={{
             padding: "12px 16px",
+            background: "transparent",
             border: `1px dashed ${theme.hair}`,
             color: theme.inkDim,
             fontFamily: theme.body, fontSize: 14,
-            textAlign: "left",
-          }}>
+            textAlign: "left", cursor: "pointer",
+            transition: "border-color 0.15s ease, color 0.15s ease",
+          }}
+          onMouseEnter={(e2) => { e2.currentTarget.style.borderColor = theme.accent; e2.currentTarget.style.color = theme.ink; }}
+          onMouseLeave={(e2) => { e2.currentTarget.style.borderColor = theme.hair; e2.currentTarget.style.color = theme.inkDim; }}
+          >
             {e}
-          </div>
+          </button>
         ))}
       </div>
     </div>
@@ -381,9 +404,12 @@ function ToolPanel({ tools }: { tools: ToolEvent[] }) {
           <span style={{ color: t.status === "completed" ? theme.accent : theme.inkDim, fontSize: 10, lineHeight: "20px" }}>
             {t.status === "completed" ? "●" : "◌"}
           </span>
-          <span style={{ minWidth: 180, color: theme.ink }}>{t.tool}</span>
+          <span style={{ minWidth: 180, color: theme.ink, flexShrink: 0 }}>{t.tool}</span>
           {t.label && (
-            <span style={{ color: theme.inkDim, fontSize: 11, wordBreak: "break-all", flex: 1 }}>{t.label}</span>
+            <span title={t.label} style={{
+              color: theme.inkDim, fontSize: 11, flex: 1, minWidth: 0,
+              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+            }}>{t.label}</span>
           )}
         </div>
       ))}

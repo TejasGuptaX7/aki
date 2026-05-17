@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { UserButton } from "@clerk/nextjs";
 import { theme } from "@/lib/theme";
+import { ErrorBoundary } from "./ErrorBoundary";
 
 /**
  * Shared shell for /chat, /connect, /audit. 240px sidebar on the left,
@@ -64,7 +65,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </aside>
 
       <main style={{ overflowY: "auto", minHeight: "100vh" }}>
-        {children}
+        <ErrorBoundary>{children}</ErrorBoundary>
       </main>
     </div>
   );

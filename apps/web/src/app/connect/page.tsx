@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { useSearchParams } from "next/navigation";
 import { useAuth } from "@clerk/nextjs";
 import { theme, API_URL } from "@/lib/theme";
 import { AppShell, ErrorBanner, SectionHeader } from "@/components/AppShell";
@@ -24,9 +25,11 @@ type CatalogItem = {
 
 export default function ConnectPage() {
   const { getToken } = useAuth();
+  const search = useSearchParams();
   const [conns, setConns] = React.useState<Connection[] | null>(null);
   const [busy, setBusy] = React.useState<string | null>(null);
-  const [err, setErr] = React.useState<string | null>(null);
+  const [err, setErr] = React.useState<string | null>(search?.get("err") || null);
+  const [ok, setOk] = React.useState<boolean>(search?.get("ok") === "1");
 
   const fetchConns = React.useCallback(async () => {
     setErr(null);
@@ -101,6 +104,20 @@ export default function ConnectPage() {
       />
 
       {err && <ErrorBanner>{err}</ErrorBanner>}
+      {ok && !err && (
+        <div style={{
+          margin: "16px 56px", padding: "10px 18px",
+          background: "rgba(197,236,79,0.08)", border: `1px solid ${theme.accentDim}`,
+          color: theme.accent, fontFamily: theme.mono, fontSize: 12,
+          display: "flex", justifyContent: "space-between", alignItems: "center",
+        }}>
+          <span>connected · ready to use</span>
+          <button onClick={() => setOk(false)} style={{
+            background: "transparent", border: "none", color: theme.inkDim,
+            fontFamily: theme.mono, fontSize: 12, cursor: "pointer",
+          }}>dismiss</button>
+        </div>
+      )}
 
       <section style={{ padding: "40px 56px" }}>
         <Kicker>active · {active.length}</Kicker>

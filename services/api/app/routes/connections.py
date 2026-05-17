@@ -71,10 +71,23 @@ async def oauth_start(
         raise HTTPException(503, "COMPOSIO_API_KEY not configured")
 
     redirect = f"{settings.api_base_url}/connections/oauth/callback"
-    link = await get_composio_client().initiate_oauth(
-        principal.organization_id, provider, redirect
-    )
+    try:
+        link = await get_composio_client().initiate_oauth(
+            principal.organization_id, provider, redirect
+        )
+    except Exception as e:
+        log.exception("composio initiate_oauth failed for provider=%s", provider)
+        raise HTTPException(502, f"upstream OAuth init failed: {e}")
 
+    # Dedupe: cleanup any stale pending rows for this (org, provider) so the
+    # /connect page doesn't accumulate them on repeated click-throughs.
+    await db.execute(
+        Connection.__table__.delete().where(
+            (Connection.organization_id == principal.organization_id)
+            & (Connection.provider == provider)
+            & (Connection.status == "pending")
+        )
+    )
     db.add(
         Connection(
             id=uuid4(),
@@ -229,5 +242,13 @@ async def oauth_callback(
         await db.commit()
 
     return RedirectResponse(
-        url=f"{get_settings().web_base_url.rstrip('/')}/chat", status_code=302,
+        url=f"{get_settings().web_base_url.rstrip('/')}/connect?ok=1", status_code=302,
     )
+
+
+def _failed_redirect(message: str) -> RedirectResponse:
+    """Bounce the user back to /connect with the error in the query string
+    so the UI can render it instead of leaving them stranded on a 500."""
+    from urllib.parse import quote
+    base = get_settings().web_base_url.rstrip("/")
+    return RedirectResponse(url=f"{base}/connect?err={quote(message)}", status_code=302)

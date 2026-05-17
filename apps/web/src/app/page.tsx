@@ -71,10 +71,15 @@ function SvcGlyph({ kind, size = 20, color = "currentColor" }: { kind: SvcKind; 
   }
 }
 
-// ─── hero glyph: SVG mask over live canvas grain field ────────────────────
+// ─── hero canvas: square of moving grain + sparks ────────────────────────
+//
+// Earlier this was an SVG <mask> that cut the canvas into the letter 'a'.
+// That looks crisp in Stitch's preview but Safari (and sometimes Chrome)
+// fail to render canvas content inside SVG foreignObject masks — leaving
+// just the letter outline with no grain inside. Plain square grain renders
+// reliably and matches what the Stitch design preview actually showed.
 function GlyphMarkII({ size = 760 }: { size?: number }) {
   const ref = React.useRef<HTMLCanvasElement | null>(null);
-  const id = React.useId().replace(/:/g, "");
 
   React.useEffect(() => {
     const cvs = ref.current;
@@ -111,8 +116,8 @@ function GlyphMarkII({ size = 760 }: { size?: number }) {
     let alive = true;
     let paused = false;
 
-    // Pause the rAF loop when the tab is hidden — otherwise it keeps
-    // burning frames in the background and grows the JS heap over hours.
+    // Pause the rAF loop when the tab is hidden so 3000 particles don't
+    // burn frames in the background and grow the JS heap over hours.
     function onVisChange() {
       paused = document.visibilityState === "hidden";
       if (!paused && alive) raf = requestAnimationFrame(frame);
@@ -159,42 +164,17 @@ function GlyphMarkII({ size = 760 }: { size?: number }) {
   }, [size]);
 
   return (
-    <div style={{ position: "relative", width: size, height: size }}>
-      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ position: "absolute", inset: 0, pointerEvents: "none", zIndex: 2 }}>
-        <defs>
-          <mask id={`mII-${id}`}>
-            <rect width={size} height={size} fill="black"/>
-            <text x={size * 0.5} y={size * 0.83} textAnchor="middle"
-                  fontFamily={theme.display}
-                  fontStyle="normal" fontWeight="700"
-                  fontSize={size * 1.05}
-                  fill="white"
-                  letterSpacing="-0.04em">a</text>
-          </mask>
-        </defs>
+    <div style={{
+      position: "relative",
+      width: size, height: size,
+      border: `1px solid ${theme.hair}`,
+      overflow: "hidden",
+      background: "#0f1014",
+    }}>
+      <canvas ref={ref} style={{ display: "block", width: "100%", height: "100%" }}/>
 
-        <foreignObject x={0} y={0} width={size} height={size} mask={`url(#mII-${id})`}>
-          <canvas ref={ref} style={{ display: "block", width: "100%", height: "100%" }}/>
-        </foreignObject>
-
-        <text x={size * 0.5} y={size * 0.83} textAnchor="middle"
-              fontFamily={theme.display}
-              fontStyle="normal" fontWeight="700"
-              fontSize={size * 1.05}
-              fill="none"
-              stroke={theme.ink}
-              strokeWidth="2.0"
-              letterSpacing="-0.04em">a</text>
-
-        <text x={size * 0.5} y={size * 0.83} textAnchor="middle"
-              fontFamily={theme.display}
-              fontStyle="normal" fontWeight="700"
-              fontSize={size * 1.05}
-              fill={theme.ink}
-              fillOpacity="0.06"
-              letterSpacing="-0.04em">a</text>
-      </svg>
-
+      {/* Type-specimen tick marks on the right edge — kept from glyph2 because
+          they made the square feel intentional, like a printer's bracket. */}
       <div style={{ position: "absolute", inset: 0, pointerEvents: "none", fontFamily: theme.mono, fontSize: 10, color: theme.inkFaint, letterSpacing: "0.14em" }}>
         {[["baseline", "83%"], ["x-height", "46%"], ["cap", "20%"]].map(([label, top]) => (
           <div key={label} style={{ position: "absolute", left: -8, right: -8, top, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
