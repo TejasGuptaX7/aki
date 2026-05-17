@@ -85,7 +85,7 @@ function Nav({ transparent }: { transparent?: boolean }) {
           </SignUpButton>
         </Show>
         <Show when="signed-in">
-          <Link href="/chat" style={{ ...primaryPill, textDecoration: "none" }}>Open app</Link>
+          <Link href="/board" style={{ ...primaryPill, textDecoration: "none" }}>Open app</Link>
           <UserButton/>
         </Show>
       </div>

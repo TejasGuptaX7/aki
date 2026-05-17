@@ -44,7 +44,7 @@ export default function NotFound() {
       }}>
         <Link href="/" style={pillPrimary}>Go home</Link>
         <Link href="/docs" style={pillSecondary}>Read the docs</Link>
-        <Link href="/chat" style={pillSecondary}>Open the app</Link>
+        <Link href="/board" style={pillSecondary}>Open the app</Link>
       </div>
     </div>
   );

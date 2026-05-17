@@ -121,6 +121,58 @@ export const agentsApi = {
     const qs = params.toString();
     return request<ChatMessage[]>(gt, "GET", `/agents/${id}/messages${qs ? `?${qs}` : ""}`);
   },
+  // Inspector Board — backend ships /agents/board; treat 404 as "no
+  // status yet" so the page renders placeholders. Callers should pass
+  // their own fallback to swallow.
+  board: (gt: Fetcher) => request<AgentBoardTile[]>(gt, "GET", "/agents/board"),
+  // Memory — SOUL/MEMORY/USER for the agent's runtime
+  getMemory: (gt: Fetcher, id: string) =>
+    request<AgentMemory>(gt, "GET", `/agents/${id}/memory`),
+  patchSoul: (gt: Fetcher, id: string, content: string) =>
+    request<AgentMemory>(gt, "PATCH", `/agents/${id}/memory/soul`, { content }),
+  addMemoryEntry: (gt: Fetcher, id: string, body: { scope: "org" | "user"; text: string }) =>
+    request<MemoryEntry>(gt, "POST", `/agents/${id}/memory/entry`, body),
+  removeMemoryEntry: (gt: Fetcher, id: string, entryId: string) =>
+    request<void>(gt, "DELETE", `/agents/${id}/memory/entry/${encodeURIComponent(entryId)}`),
+  // Plan-and-execute snapshot for the chat surface
+  currentRun: (gt: Fetcher, id: string) =>
+    request<AgentRun>(gt, "GET", `/agents/${id}/current-run`),
+};
+
+// ─── new types ──────────────────────────────────────────────────────
+
+export type AgentBoardTile = {
+  id: string;
+  name: string;
+  slug: string;
+  status: "idle" | "thinking" | "acting" | "waiting" | "done" | "errored";
+  current_step: string | null;
+  started_at: string | null;
+  /** Tool-calls-per-minute over the last hour, oldest → newest. */
+  sparkline: number[];
+};
+
+export type MemoryEntry = {
+  id: string;
+  text: string;
+  created_at: string;
+};
+
+export type AgentMemory = {
+  soul: string;
+  org_entries: MemoryEntry[];
+  user_entries: MemoryEntry[];
+};
+
+export type AgentRunStep = {
+  text: string;
+  status: "pending" | "active" | "done" | "errored";
+};
+
+export type AgentRun = {
+  plan: AgentRunStep[];
+  current_index: number;
+  started_at?: string;
 };
 
 // Connections --------------------------------------------------------

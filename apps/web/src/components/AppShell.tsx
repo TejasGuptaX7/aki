@@ -22,6 +22,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const approvalsCount = useApprovalsCount();
 
   const sections = [
+    { href: "/board", label: "Board" },
     { href: "/agents", label: "Agents" },
     { href: "/connect", label: "Connect" },
     { href: "/audit", label: "Audit" },
