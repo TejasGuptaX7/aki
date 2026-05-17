@@ -1,0 +1,165 @@
+# Fly Machines deployment for the Aki browser harness.
+#
+# Why Fly Machines (not Apps v1 / not k8s):
+#   - Per-region machines we can pin geographically (compliance — EU agents
+#     stay in fra; we don't want a French customer's Chrome to render JS
+#     from a Sydney IP and trip every fraud system on the planet).
+#   - Per-second billing so the long-tail of idle agents doesn't burn money;
+#     paired with auto-stop, idle agents cost ~$0.
+#   - gVisor-isolated kernel surface (default on the `shared-cpu-*` plans
+#     is host kernel; we use `performance-*` which is full VM, still
+#     hypervisor-isolated). Chromium with --no-sandbox is safer in a VM
+#     than in a shared-kernel container.
+#
+# Deploy:
+#   flyctl deploy --image ghcr.io/<org>/aki-browser-harness:<sha>
+#
+# First-time setup:
+#   flyctl apps create aki-browser-harness
+#   flyctl secrets set \
+#       BROWSER_HARNESS_API_KEY=... \
+#       BROWSER_HARNESS_R2_ENDPOINT=https://<acct>.r2.cloudflarestorage.com \
+#       BROWSER_HARNESS_R2_ACCESS_KEY=... \
+#       BROWSER_HARNESS_R2_SECRET_KEY=... \
+#       BROWSER_HARNESS_R2_BUCKET=aki-browser-profiles
+#   for region in iad sea fra syd; do
+#     flyctl volumes create browser_profiles --region "$region" --size 20 -y
+#   done
+#   flyctl deploy
+#
+# fly.toml is purely declarative — anything that mutates global state
+# (apps/secrets/volumes) lives in the comments above so it stays manual.
+
+app = "aki-browser-harness"
+primary_region = "iad"
+kill_signal = "SIGTERM"
+kill_timeout = "30s"
+
+[build]
+  # Image is built by the GHA workflow and pushed to GHCR; `flyctl deploy
+  # --image` overrides [build] at deploy time. The dockerfile reference
+  # here exists so `flyctl deploy` from a developer laptop still works.
+  dockerfile = "Dockerfile"
+
+[deploy]
+  # Rolling — one machine at a time. Chromium cold-start is ~2-4s; total
+  # 4-region rollout is ~30s with this strategy.
+  strategy = "rolling"
+
+[env]
+  PORT = "7900"
+  HOST = "0.0.0.0"
+  LOG_LEVEL = "INFO"
+  # Profile root maps onto the Fly volume (/data) — see [[mounts]].
+  BROWSER_HARNESS_PROFILE_ROOT = "/data/browser-profiles"
+  BROWSER_HARNESS_SKILLS_ROOT = "/data/skills"
+  # Pool tuning — production values.
+  BROWSER_HARNESS_IDLE_SECONDS = "600"
+  BROWSER_HARNESS_HARD_MAX_SECONDS = "1800"
+  # SSRF allowlist defaults empty; customers with internal tools override
+  # via `flyctl secrets set BROWSER_HARNESS_ALLOWED_HOSTS=...` per app.
+
+# Secrets (NOT values — Fly resolves these from `flyctl secrets set`):
+#   BROWSER_HARNESS_API_KEY
+#   BROWSER_HARNESS_R2_ENDPOINT
+#   BROWSER_HARNESS_R2_ACCESS_KEY
+#   BROWSER_HARNESS_R2_SECRET_KEY
+#   BROWSER_HARNESS_R2_BUCKET
+#   BROWSER_HARNESS_R2_REGION  (optional; defaults to "auto" for R2)
+
+[[services]]
+  internal_port = 7900
+  protocol = "tcp"
+  # auto_stop_machines / auto_start_machines: per-region machines hibernate
+  # after `auto_stop_machines = "stop"` triggers on idle. The 5-min idle
+  # window matches the spec; Fly's internal idle detection is based on
+  # active connections, so a session held open by a streaming response
+  # won't be stopped mid-flight.
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  # 0 idle, but we want at least one warm machine per region during
+  # business hours; we run a scheduled flyctl-scale job from the control
+  # plane (outside this repo) to bump min_machines_running region by
+  # region — leave default 0 here so off-hours bills go to zero.
+
+  [services.concurrency]
+    type = "requests"
+    # Per-machine ceiling — beyond this Fly's proxy queues. Chromium pool
+    # caps memory before this matters; this is a back-pressure floor.
+    hard_limit = 50
+    soft_limit = 30
+
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+    force_https = true
+
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+    force_https = true
+
+  [[services.http_checks]]
+    interval = "15s"
+    timeout = "3s"
+    grace_period = "30s"
+    method = "get"
+    path = "/healthz"
+    protocol = "http"
+    # 3 fails @ 15s + 30s grace ≈ 75s before Fly replaces a sick machine.
+    # Tune by editing services.http_checks; Fly doesn't expose "max
+    # consecutive failures" as a field — it derives it from check
+    # frequency and the machine's restart policy below.
+
+  [[services.tcp_checks]]
+    interval = "30s"
+    timeout = "2s"
+    grace_period = "30s"
+
+# Volume per machine for the local profile cache. R2 is the source of
+# truth; the volume avoids tar+download on every cold start within the
+# 5-min auto-stop window (machines stop, volume persists, machine resumes
+# with the same volume = warm profile cache).
+[mounts]
+  source = "browser_profiles"
+  destination = "/data"
+  initial_size = "20gb"
+  # `auto_extend_size_threshold = 80` would let Fly grow the volume when
+  # 80% full; we keep it fixed for now so an unbounded skill leak can't
+  # silently 10x the bill — alert and clean up instead.
+
+[[vm]]
+  cpu_kind = "performance"
+  cpus = 2
+  memory_mb = 4096
+  # Per-region machines. Fly creates one machine per (region, group) on
+  # `flyctl deploy`; volumes are sticky per-machine, so this gives us
+  # one Chromium pool per region with its own warm cache.
+
+[metrics]
+  port = 9091
+  path = "/metrics"
+  # Note: server.py doesn't expose /metrics yet — Fly silently ignores
+  # missing metric endpoints, so this is a placeholder for when we add
+  # Prometheus scrape. Left here so the deploy doesn't need a fly.toml
+  # change later.
+
+[restart]
+  policy = "on-failure"
+  retries = 5
+
+[processes]
+  app = "python server.py"
+
+# Region list — flyctl creates one machine per region listed under
+# [[regions]] (or via `flyctl scale count <n> --region <code>`). We use
+# the regions block below so this file is the SoT for "where do we run".
+[[regions]]
+  code = "iad"  # US east (Ashburn) — primary
+[[regions]]
+  code = "sea"  # US west (Seattle)
+[[regions]]
+  code = "fra"  # Europe (Frankfurt) — GDPR data residency for EU agents
+[[regions]]
+  code = "syd"  # APAC (Sydney)
