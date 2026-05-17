@@ -17,9 +17,13 @@ Source kinds (`connection.config.source`):
   - "arcade"          → Arcade.dev; one MCP server, per-user via header
   - "browser_harness" → self-hosted services/browser-harness; see PROTOCOL.md
   - "browser_use"     → Browser Use Cloud (kept as fallback)
-  - "composio"        → legacy; sunsetting after Pipedream migration completes.
-                        Existing rows keep working; UI no longer creates new ones.
   - "custom"          → BYO MCP URL, passed through verbatim
+
+Legacy rows with `source="composio"` are silently skipped (no MCP server
+emitted). The Composio client + auth_config plumbing was deleted in
+phase 3d; existing rows live in the DB until the user re-OAuths via
+Pipedream and either we expose a /connections DELETE or they ignore the
+orphan.
 """
 from __future__ import annotations
 
@@ -31,7 +35,6 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.arcade_client import get_arcade_client
-from app.composio_client import get_composio_client
 from app.config import get_settings
 from app.models import Connection
 from app.pipedream_client import get_pipedream_client
@@ -215,24 +218,6 @@ async def materialize_mcp_servers(
                 "headers": {"x-browser-use-api-key": settings.browser_use_api_key},
             }
         )
-
-    # ── Composio (legacy; sunsetting) ──────────────────────────────────────
-    # Kept so existing connections don't break the moment Pipedream lands.
-    # Will be deleted in a follow-up once all customers have re-OAuth'd.
-    if "composio" in sources and settings.composio_api_key:
-        try:
-            comp = get_composio_client()
-            session = await comp.create_tool_router_session(org_id)
-            servers.append(
-                {
-                    "name": "composio",
-                    "transport": session.mcp_type,
-                    "url": session.mcp_url,
-                    "headers": {"x-api-key": settings.composio_api_key},
-                }
-            )
-        except Exception:
-            log.exception("composio MCP materialize failed; skipping (legacy)")
 
     # ── Custom BYO MCP ─────────────────────────────────────────────────────
     for r in rows:

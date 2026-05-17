@@ -131,10 +131,10 @@ async def clerk_webhook(request: Request) -> None:
         )
         await db.commit()
 
-    # No Composio entity provisioning here — in v3 the entity is created
-    # implicitly when we first call composio.create(userId) (i.e. when the
-    # org's Hermes runtime materializes its MCP session, or when the first
-    # OAuth is initiated). org.id is the entity_id either way.
+    # No external-provider entity provisioning at signup. Pipedream Connect
+    # creates entities lazily on first /connections/pipedream/connect-token,
+    # using the org_id (or org_id:agent_id for per-agent) as the
+    # external_user_id. No upfront API call needed.
 
     # Push the new org_id into Clerk's user.public_metadata so the JWT
     # template's {{user.public_metadata.aki_org_id}} resolves on next sign-in.

@@ -74,14 +74,6 @@ class Settings(BaseSettings):
     embedding_model: str = "text-embedding-3-small"
     embedding_dims: int = 1536
 
-    # Connectors — Composio (sunsetting; retained until migration completes)
-    composio_api_key: str | None = None
-    composio_base_url: str = "https://backend.composio.dev"
-    composio_webhook_secret: str | None = None
-    composio_gmail_auth_config_id: str | None = None
-    composio_slack_auth_config_id: str | None = None
-    composio_slackbot_auth_config_id: str | None = None
-
     # Connectors — Pipedream Connect (primary long-tail API layer).
     # client_credentials OAuth: backend exchanges (client_id, client_secret)
     # at /v1/oauth/token for a short-lived JWT, then uses Bearer + X-PD-Environment
