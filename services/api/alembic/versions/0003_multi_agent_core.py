@@ -147,12 +147,12 @@ def upgrade() -> None:
     # The system_prompt here is the v1 default brief. Per-agent system prompts
     # are user-editable from the UI; this row is just so existing orgs aren't
     # left without anything to chat with.
+    # Dollar-quoted string ($$...$$) avoids the apostrophe-escape mess and
+    # the Postgres "adjacent E-string concatenation" gotcha.
     op.execute("""
         insert into agents (organization_id, name, slug, system_prompt, status)
         select id, 'Aki', 'aki',
-               E'You are Aki, the company\\'s assistant. '
-               E'Be honest about what you did, cite sources, '
-               E'and ask before doing anything irreversible.',
+               $$You are Aki, the company's assistant. Be honest about what you did, cite sources, and ask before doing anything irreversible.$$,
                'active'
         from organizations
         on conflict (organization_id, slug) do nothing;
