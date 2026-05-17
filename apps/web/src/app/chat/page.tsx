@@ -276,13 +276,7 @@ function Pulse() {
     <span style={{
       width: 8, height: 8, borderRadius: "50%", background: theme.accent,
       animation: "akiPulse 1.4s ease-in-out infinite",
-      boxShadow: `0 0 0 0 ${theme.accent}`,
-    }}>
-      <style>{`@keyframes akiPulse {
-        0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(197,236,79,0.6); }
-        50% { opacity: 0.5; box-shadow: 0 0 0 8px rgba(197,236,79,0); }
-      }`}</style>
-    </span>
+    }}/>
   );
 }
 
@@ -316,6 +310,14 @@ function EmptyChat() {
 
 function MessageBlock({ msg }: { msg: Msg }) {
   const isUser = msg.role === "user";
+  const [copied, setCopied] = React.useState(false);
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(msg.content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1400);
+    } catch {/* ignore */}
+  }
   return (
     <div style={{ marginBottom: 28 }}>
       <div style={{ fontFamily: theme.mono, fontSize: 10, color: isUser ? theme.inkDim : theme.accent, letterSpacing: "0.22em", textTransform: "uppercase", marginBottom: 8 }}>
@@ -329,7 +331,31 @@ function MessageBlock({ msg }: { msg: Msg }) {
         {msg.content || (isUser ? "" : <span style={{ color: theme.inkFaint }}>…</span>)}
       </div>
       {msg.tools && msg.tools.length > 0 && <ToolPanel tools={msg.tools}/>}
+      {!isUser && msg.content && (
+        <div style={{ marginTop: 12, display: "flex", gap: 14, alignItems: "center" }}>
+          <button onClick={copy} style={{
+            background: "transparent", border: "none", padding: 0, cursor: "pointer",
+            fontFamily: theme.mono, fontSize: 11, color: copied ? theme.accent : theme.inkFaint,
+            letterSpacing: "0.18em", textTransform: "uppercase",
+            display: "flex", alignItems: "center", gap: 6,
+          }}>
+            <CopyIcon/> {copied ? "copied" : "copy"}
+          </button>
+          <span style={{ fontFamily: theme.mono, fontSize: 11, color: theme.inkFaint, letterSpacing: "0.18em", textTransform: "uppercase" }}>
+            · done
+          </span>
+        </div>
+      )}
     </div>
+  );
+}
+
+function CopyIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="9" y="9" width="13" height="13" rx="2"/>
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+    </svg>
   );
 }
 

@@ -39,6 +39,29 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1", tags=["chat"])
 
 
+AKI_SYSTEM_PROMPT = """\
+You are Aki, an agent embedded in a company. Operate against the user's
+connected tools (Composio, Browser Use) via MCP.
+
+Slack:
+- ALWAYS use the `slackbot` toolkit when posting to Slack, never `slack`.
+  `slack` posts as the human; `slackbot` posts as the workspace bot. Even
+  if both seem available, prefer slackbot. If only `slack` is available,
+  tell the user to install the bot via the Connect page rather than
+  posting as them.
+- Bots can only post in channels they've been invited to. If a post
+  fails with `not_in_channel`, ask the user to /invite the bot first.
+
+Gmail and other Composio tools: act on behalf of the user as expected.
+
+Destructive actions (send email, post message, write to a database,
+file/event creation): briefly confirm intent before executing if the
+user's request is ambiguous. For clearly-requested actions, just do them.
+
+Cite sources for any factual claims pulled from a tool.
+"""
+
+
 async def _rbac_check(principal: Principal, action: str) -> None:
     """v1 stub. Replace with real check when memberships table lands."""
     return None
@@ -134,6 +157,20 @@ async def chat_completions(
     await _rbac_check(principal, "chat.send")
 
     body = await request.body()
+    # Inject Aki's system prompt at the front of the messages list so the
+    # agent has standing guidance (bot identity for Slack, ask before
+    # destructive actions, etc.). We rewrite the request body in place.
+    try:
+        import json as _json
+        body_dict = _json.loads(body) if body else {}
+        msgs = body_dict.get("messages") or []
+        has_system = any((m or {}).get("role") == "system" for m in msgs)
+        if not has_system:
+            body_dict["messages"] = [{"role": "system", "content": AKI_SYSTEM_PROMPT}, *msgs]
+            body = _json.dumps(body_dict).encode("utf-8")
+    except Exception:
+        log.exception("system-prompt injection failed; passing body through")
+
     proc: HermesProcess = await ensure_running(db, principal.organization_id)
 
     await append_audit(

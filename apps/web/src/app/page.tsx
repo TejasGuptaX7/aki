@@ -109,9 +109,19 @@ function GlyphMarkII({ size = 760 }: { size?: number }) {
     }));
     let raf = 0;
     let alive = true;
+    let paused = false;
+
+    // Pause the rAF loop when the tab is hidden — otherwise it keeps
+    // burning frames in the background and grows the JS heap over hours.
+    function onVisChange() {
+      paused = document.visibilityState === "hidden";
+      if (!paused && alive) raf = requestAnimationFrame(frame);
+    }
+    document.addEventListener("visibilitychange", onVisChange);
 
     function frame(t: number) {
       if (!alive || !ctx) return;
+      if (paused) return;
       ctx.fillStyle = "rgba(21,22,26,0.22)";
       ctx.fillRect(0, 0, W, H);
 
@@ -141,7 +151,11 @@ function GlyphMarkII({ size = 760 }: { size?: number }) {
       raf = requestAnimationFrame(frame);
     }
     raf = requestAnimationFrame(frame);
-    return () => { alive = false; cancelAnimationFrame(raf); };
+    return () => {
+      alive = false;
+      cancelAnimationFrame(raf);
+      document.removeEventListener("visibilitychange", onVisChange);
+    };
   }, [size]);
 
   return (
