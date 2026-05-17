@@ -1,0 +1,150 @@
+export const metadata = {
+  title: "Audit log — Aki docs",
+  description: "What we record, the hash chain that prevents tampering, and how to verify the chain locally with the CLI.",
+};
+
+# Audit log
+
+Every action an agent takes — every tool call, every chat turn, every consent
+decision, every connection change — lands in an append-only Postgres table.
+Rows are hash-chained, so we can prove (and you can verify) that the log
+hasn't been tampered with.
+
+The log lives at [/audit](/audit) in the app. The filter dropdown narrows
+to one agent.
+
+## What's recorded
+
+Each row has:
+
+| Field           | What                                                            |
+| --------------- | --------------------------------------------------------------- |
+| `id`            | Auto-incrementing primary key                                   |
+| `actor`         | Who initiated — `user:<id>`, `agent:<id>`, or `system`          |
+| `agent_id`      | Which agent the action belongs to (null for org-level events)   |
+| `action`        | The event type — e.g. `chat.start`, `chat.tool_call`, `chat.complete`, `chat.consent.approved`, `connection.created` |
+| `target`        | What the action touched — message id, tool name, connection id  |
+| `payload`       | JSON with everything else — tool args, usage, cost, model, etc. |
+| `content_hash`  | SHA-256 of the canonicalized payload (see below)                |
+| `prev_hash`     | The previous row's `content_hash`                               |
+| `created_at`    | Server timestamp, microsecond precision                         |
+
+The actions we currently emit:
+
+- `chat.start` — request received, message accepted
+- `chat.tool_call` — agent called a tool; payload has `tool`, `status`, `label`
+- `chat.complete` — turn finished; payload has `model`, `usage`, `cost_usd`, `duration_ms`, `tool_calls`
+- `chat.consent.staged` — agent asked for permission
+- `chat.consent.approved` / `chat.consent.rejected` — human decision
+- `connection.created` / `connection.disabled` — `/connect` page actions
+- `agent.created` / `agent.updated` / `agent.archived` — `/agents` page actions
+
+New action types may be added — we never rename or remove existing ones.
+
+## The hash chain
+
+`content_hash` is `SHA-256(canonical_json(row_without_hash))`. `prev_hash` is
+the previous row's `content_hash`. Together they form a tamper-evident chain:
+any retroactive change to row N invalidates row N's `content_hash`, which
+breaks rows N+1, N+2, … all the way to the head.
+
+The first row's `prev_hash` is `NULL` (the root).
+
+We do **not** store the hash chain in a Merkle tree today — it's a flat
+linked list, which keeps verification cheap (O(n) sequential scan) and
+write-time cost zero. If you want a stronger guarantee (e.g. anchoring the
+head hash externally), tell us — it's a roadmap item.
+
+## Verifying the chain locally
+
+Two ways:
+
+### Quick: re-hash in SQL
+
+If you have a read-replica connection string, you can verify in pure SQL:
+
+```sql
+WITH chain AS (
+  SELECT
+    id,
+    content_hash,
+    prev_hash,
+    encode(
+      sha256(
+        convert_to(
+          jsonb_strip_nulls(to_jsonb(audit) - 'content_hash')::text,
+          'UTF8'
+        )
+      ),
+      'hex'
+    ) AS recomputed
+  FROM audit
+  ORDER BY id
+)
+SELECT id FROM chain WHERE content_hash != recomputed;
+```
+
+If the query returns zero rows, the chain is intact. If it returns any row,
+that's the first row that was tampered with (or the canonicalization differs;
+see below).
+
+### Thorough: the verification CLI
+
+```bash
+npx @aki/verify-audit \
+  --org $YOUR_ORG_ID \
+  --since 2026-01-01 \
+  --until 2026-05-16
+```
+
+The CLI streams every row in range, recomputes each `content_hash`, verifies
+the `prev_hash` link to the previous row, and prints a green tick or the
+first broken row. It supports `--export json` to dump the canonical chain
+for off-site retention.
+
+The CLI is open source and lives at `@aki/verify-audit` on npm. You don't
+need to trust our hosted UI — you can pull the rows directly from a Neon
+read replica and verify them yourself.
+
+## Canonical JSON
+
+To make hashes reproducible across languages, we serialize payloads with
+RFC 8785 (JCS) canonical JSON:
+
+- Object keys sorted lexicographically
+- No whitespace
+- Numbers normalized (no trailing zeros, no `+e` exponents)
+- UTF-8 everywhere
+
+The verification CLI uses the same canonicalization. If your hand-rolled
+recompute disagrees with ours, check canonicalization first.
+
+## Retention
+
+During beta, retention is unlimited. After GA, the default is 18 months with
+an option to extend. Audit rows are **never** anonymized away from the org
+they belong to — even on account deletion, the row is preserved with the
+`org_id` replaced by a tombstone so the hash chain stays verifiable. The
+content payload is purged.
+
+## What this protects against
+
+The hash chain protects against:
+
+- **Retroactive payload edits** — we can't quietly change what an agent said.
+- **Row deletion** — we can't quietly drop a chat turn or a consent decision.
+- **Reordering** — the `prev_hash` link enforces the original order.
+
+It does **not** protect against:
+
+- **Forward forgery** — if our DB credentials are stolen, an attacker can
+  append new rows. The chain still verifies; it just contains lies past the
+  break point.
+- **Selective retention** — we promise unlimited retention during beta, but
+  the hash chain itself can't prove we retained everything. External
+  anchoring (a roadmap item) would close this gap.
+
+The right way to use the chain is: pull the rows that matter for a given
+review, verify them locally, and store the head hash externally. That gives
+you a strong tamper-evidence claim without trusting our infrastructure
+end-to-end.

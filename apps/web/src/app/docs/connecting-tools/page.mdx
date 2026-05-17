@@ -1,0 +1,106 @@
+export const metadata = {
+  title: "Connecting tools — Aki docs",
+  description: "OAuth walkthrough, per-agent vs org-wide scoping, and the full connector catalog as of today.",
+};
+
+# Connecting tools
+
+A connection gives an agent scoped access to one system via OAuth (or, for
+tools without an API, via a managed Chrome session). Connections are managed
+at [/connect](/connect).
+
+## OAuth flow, end to end
+
+1. **Pick a scope.** At the top of `/connect`, choose whether new connections
+   attach to *all agents* (org-wide) or to *one specific agent*. This decides
+   which agents will see this connection in their tool list.
+2. **Click Connect on the provider card.** Aki creates a Composio-managed
+   OAuth flow and redirects you to the provider's domain.
+3. **Grant the scopes the provider asks for.** Aki requests the minimum scopes
+   your brief implies — read for read-only tasks, write only when the brief
+   says the agent will send/edit/create.
+4. **You're sent back to /connect with `?ok=1`.** The new connection appears
+   under **active**, tagged with the scope it belongs to.
+
+If the OAuth flow fails (revoked app, expired callback URL, etc.) you'll land
+back on `/connect?err=…` with the provider error verbatim. The most common
+fixes are in [Troubleshooting](/docs/troubleshooting).
+
+## Per-agent vs org-wide
+
+This is the single most-misunderstood thing. The rule:
+
+- **Org-wide** connections (`agent_id IS NULL`) are visible to every agent in
+  your workspace. Most teams want their Gmail to be per-agent (one Gmail for
+  Aki Sales, a different one for Aki Recruiting), but want Slack to be
+  org-wide (one bot install serving every agent).
+- **Per-agent** connections (`agent_id = some-agent`) are visible only to
+  that one agent. The agent's tool list combines org-wide + its own — it
+  cannot see another agent's per-agent connections.
+
+When you create the agent you're connecting *for*, choose **Only for &lt;Agent
+Name&gt;** in the scope selector before clicking Connect. The active list
+groups org-wide vs per-agent connections so you can see what's shared and
+what's pinned.
+
+> If you connect Gmail org-wide by accident, the easiest fix today is to
+> disable the connection and reconnect under the agent you meant. We'll ship
+> in-place rescoping later — it's tracked.
+
+## What we ship today
+
+Every connection is implemented via [Composio v3](https://composio.dev), which
+handles the OAuth dance, token refresh, and scope policy on our behalf.
+
+| Provider          | Scopes                                  | Notes                                       |
+| ----------------- | --------------------------------------- | ------------------------------------------- |
+| Gmail             | Read, send, draft, label, search        | Per-user OAuth; per-agent recommended       |
+| Slack (bot)       | Workspace bot — `chat:write`, `app_mentions:read` | Org-wide; one bot install serves every agent |
+| Slack (user)      | DM the installer on long tasks          | Per-agent recommended                       |
+| Google Calendar   | Read availability, create events        | Per-user OAuth                              |
+| Salesforce        | Read, create lead, log activity         | Per-org enterprise OAuth                    |
+| HubSpot           | Read, create contact, log activity      | Per-org OAuth                               |
+| GitHub            | Read repo, read/write PR comments       | Per-user or per-org install                 |
+| Linear            | Read, comment, transition issues        | Per-org OAuth                               |
+| Notion            | Read, create pages in selected dbs      | Per-org OAuth, db picker on connect         |
+| Postgres          | Per-database connection string          | Read-only by default; flip in brief         |
+| Stripe (read-only)| Read customers, charges, subscriptions  | We refuse write scopes — see Consent        |
+| Browser mode      | Managed Chrome session via Browser Use  | One per agent; you log in once              |
+
+If you need a connector we don't have, **email
+[hello@tryclean.ai](mailto:hello@tryclean.ai)**. Connector requests from beta
+users go to the top of the queue.
+
+## Browser mode
+
+For tools that don't have a useful API — LinkedIn Recruiter, most legacy
+internal admin panels, the long tail — Aki can drive a real Chrome via
+[Browser Use](https://browser-use.com). Enable it from `/connect` under
+**Browser Mode**.
+
+The flow:
+
+1. You enable browser mode for an agent. Aki provisions a profile keyed to
+   that agent.
+2. The first time the agent needs to use a tool, it opens a remote Chrome
+   window and asks you to log in. You log in once; the session persists in
+   the profile.
+3. Subsequent runs reuse the session. The agent narrates what it's doing
+   ("clicked the search bar, typed 'senior backend python'…") in the chat.
+
+Browser mode is more expensive per call (live Chrome time + vision tokens) and
+slower than an API call. Use it when there's no good alternative, not when
+there is.
+
+## Revoking access
+
+From `/connect`:
+
+- For OAuth connections, click **Disable** on the active card. We revoke the
+  token via the provider's API and delete it from our database. The agent
+  loses access on its next turn.
+- For browser mode, **Disable** logs out the managed Chrome and deletes the
+  profile. The agent loses access immediately.
+
+If you delete your account entirely, all connections are revoked as part of
+the deletion flow ([details on /trust](/trust)).

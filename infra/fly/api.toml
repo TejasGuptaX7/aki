@@ -1,0 +1,72 @@
+# Aki control plane on Fly Machines.
+#
+# Deploy:
+#   flyctl deploy --config infra/fly/api.toml --image ghcr.io/akiapp/api:<sha>
+#
+# Secrets are populated via `fly secrets set` (see infra/secrets-bootstrap.md).
+# This file references names only — never paste values here.
+#
+# Open issue (see infra/README.md): app/agent_runtime.py uses docker.sock to
+# spawn per-org Hermes containers. Fly Machines does not expose a docker
+# daemon. Either swap to the Fly Machines API or host the API elsewhere.
+
+app          = "aki-api"
+primary_region = "iad"
+
+[build]
+  dockerfile = "../../services/api/Dockerfile"
+
+[deploy]
+  # Migrations run from the build image in CI before deploy (see
+  # .github/workflows/api-deploy.yml). Leaving release_command unset keeps
+  # the deploy idempotent on retries; if migrations have already been applied
+  # the CI step is a no-op.
+  strategy = "rolling"
+
+[env]
+  APP_ENV            = "prod"
+  PORT               = "8000"
+  CORS_ORIGINS       = "https://app.aki.dev,https://aki.dev"
+  HERMES_IDLE_MINUTES = "15"
+  AGENT_RUNTIME      = "fly"
+  # docker.sock is unavailable on Fly; the runtime needs to know to take
+  # the Machines API path once that swap lands.
+
+[http_service]
+  internal_port      = 8000
+  force_https        = true
+  auto_stop_machines = false   # control plane is always-on
+  auto_start_machines = true
+  min_machines_running = 1
+  processes          = ["app"]
+
+  [[http_service.checks]]
+    grace_period  = "15s"
+    interval      = "15s"
+    method        = "GET"
+    timeout       = "5s"
+    path          = "/health"
+
+[[vm]]
+  size       = "shared-cpu-1x"
+  memory_mb  = 2048
+  cpu_kind   = "shared"
+  cpus       = 1
+
+[processes]
+  app = "uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+# Secrets consumed (set via `fly secrets set ... --app aki-api`):
+#   DATABASE_URL
+#   DATABASE_URL_SYNC
+#   CLERK_SECRET_KEY
+#   CLERK_WEBHOOK_SECRET
+#   CLERK_JWKS_URL
+#   CLERK_JWT_ISSUER
+#   OPENAI_API_KEY
+#   PIPEDREAM_CLIENT_ID
+#   PIPEDREAM_CLIENT_SECRET
+#   PIPEDREAM_PROJECT_ID
+#   ARCADE_API_KEY
+#   BROWSER_HARNESS_API_KEY
+#   BROWSER_HARNESS_URL

@@ -1,0 +1,115 @@
+export const metadata = {
+  title: "Slack — Aki docs",
+  description: "Install the Aki bot, mention specific agents from any channel, approve long-running tasks from DMs.",
+};
+
+# Slack
+
+Slack is the fastest channel between you and your agents. After a one-time
+bot install, every agent you create is mentionable as `@aki-<slug>` from any
+channel the bot is in.
+
+## Installing the bot
+
+From [/connect](/connect):
+
+1. Scope selector at the top — set to **All agents (org-wide)**. Slack is one
+   of the few connections that almost always belongs at the org level.
+2. Click **Connect Slack (as a bot)**.
+3. You'll be redirected to Slack's standard workspace-install flow. Approve
+   the scopes:
+   - `app_mentions:read` — so the bot sees `@aki-sales` mentions
+   - `chat:write` — so the bot can post replies
+   - `im:write` — so the bot can DM you for approvals and pingbacks
+   - `users:read` — to map Slack users to Aki accounts for permissions
+4. After approval, the bot is installed. Invite it to any channel where you
+   want to mention agents.
+
+You'll see one new connection on `/connect` under **shared with all agents**:
+`Slack (bot)`. That's the install.
+
+## Mentioning a specific agent
+
+Every agent you create has a slug derived from its name:
+
+- `Aki Sales` → `@aki-sales`
+- `Aki Recruiting` → `@aki-recruiting`
+- `Aki Ops Team` → `@aki-ops-team`
+
+In a channel where the bot is present, mention the agent the same way you'd
+mention a teammate:
+
+```text
+@aki-sales what came in from the demo form this morning?
+```
+
+The agent replies threaded under your message. The reply links back to the
+full chat at `/chat/{agentId}` if you need the receipts.
+
+## Long-task pingbacks
+
+Some tasks take a few minutes — full inbox triage, scraping a competitor
+catalog, generating a weekly digest. Instead of making you wait in the chat,
+agents kick the work to a background runner and DM you when it's done.
+
+The DM contains:
+
+- A one-line summary of what was done
+- The list of tool calls (collapsed by default)
+- A deep link back to the chat thread
+- Approve / Reject buttons if anything is staged for consent
+
+You don't need to opt in — long tasks auto-pingback to the user who started
+them. You can disable per-agent from the agent detail page (planned).
+
+## Approving from a DM
+
+When an agent stages an Ask-tier or Never-money action, you'll get a DM:
+
+```text
+Aki Sales wants to send 2 replies on your behalf.
+
+→ Subject: "Re: Demo request — Northwind Eng"
+   To: hana@northwind.com
+   Preview: Thanks Hana — Tuesday 2pm Pacific works for our AE…
+
+→ Subject: "Re: Demo request — Apollon Platform"
+   …
+
+[ Approve all ]  [ Approve individually ]  [ Reject ]
+```
+
+Click **Approve all** — the agent sends both. Click **Approve individually**
+— Slack pops a thread per action with its own buttons. Click **Reject** — the
+agent stops, the staged drafts are deleted, and the reason (if you typed one)
+lands in the audit log.
+
+The approve token is single-use and signed with a short-lived key. Forwarding
+the DM doesn't let your teammate approve on your behalf.
+
+## Etiquette and limits
+
+A few things to know:
+
+- **The bot only replies when mentioned.** It does not listen to channel
+  background noise. If you mention `@aki-sales` in a thread, replies go to
+  that thread.
+- **One mention = one chat turn.** Mentioning twice runs the agent twice — it
+  doesn't get smarter, it just costs more. If your first mention got it
+  wrong, reply to the agent's message in the thread to course-correct
+  cheaply.
+- **DMs to the bot run the agent that owns the DM channel.** Each agent has
+  its own DM thread with each user, isolated from the others.
+- **Channel members see the bot's replies.** If you don't want a private
+  reply, ask the agent in DM, not in `#general`.
+
+## Troubleshooting
+
+If `@aki-sales` doesn't reply, check:
+
+- The Aki Slack bot is invited to the channel (`/invite @aki`)
+- The Slack connection on `/connect` shows status `active`
+- The agent named "Aki Sales" exists on `/agents` and isn't archived
+
+If you still see nothing, [Troubleshooting](/docs/troubleshooting) covers the
+top reasons.

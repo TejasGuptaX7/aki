@@ -1,0 +1,112 @@
+export const metadata = {
+  title: "Consent tiers — Aki docs",
+  description: "Auto, ask, never-money. What triggers each tier, how to approve from Slack or the web, and how to tighten the defaults.",
+};
+
+# Consent tiers
+
+Every tool call an agent makes lands in one of three tiers. The tier decides
+whether the agent runs it now, waits for you, or refuses without a human.
+
+## The three tiers
+
+### Auto
+
+Runs immediately without asking. Reserved for **read-only** and
+**team-internal** actions where the worst case is wasted time.
+
+Examples:
+
+- Reading email
+- Searching the CRM
+- Listing files in a doc store
+- Posting a status update to an internal Slack channel the agent already
+  belongs to
+- Closing a Linear issue marked "stale"
+
+Auto-tier tool calls still land in the audit log — you can see everything
+the agent did after the fact at `/audit`.
+
+### Ask
+
+Waits for your nod. Used for actions with external reach, irreversibility,
+or non-trivial blast radius.
+
+Examples:
+
+- Sending email *outside your team's domain*
+- Creating a Salesforce lead
+- Scheduling a meeting on someone else's calendar
+- Editing a document not owned by the agent
+- Closing more than 5 issues in one batch (configurable)
+
+When an agent stages an Ask-tier action, it lands in
+[/approvals](/approvals). You'll see the summary, the agent that staged it,
+and the full payload. Click **Approve** or **Reject** — both land in the audit
+log.
+
+You can also approve from Slack — see [Slack](/docs/slack).
+
+### Never-money
+
+Always asks. Full stop. **You cannot promote a Never-money action into Auto
+or Ask, no matter how you write the brief.** The default list:
+
+- Anything that **spends money** — outbound API calls to paid services,
+  Stripe charges, ad-platform spend, ride-share bookings, anything with a
+  credit-card-shaped side effect.
+- Anything **irreversible** — `rm -rf`, hard-delete on a database row, mass
+  unsubscribe, cancellation of a subscription that takes a fee to restore.
+- Anything that **legally binds you** — signing a document, accepting terms,
+  agreeing to a contract.
+
+We make the never-money line ourselves, in code, because we don't trust
+ourselves to get the brief perfect every time. The line is published at
+[/trust](/trust) and any expansion is a tracked change in our public commit
+log.
+
+## How a call gets classified
+
+Each connector ships with a default classification per tool. When an agent
+calls `gmail.send`, the connector returns `tier: ask` if the recipient is
+outside the user's domain, `tier: auto` if inside (and inside is configurable
+per org).
+
+You can **tighten** any tool to a stricter tier from `/connect` (planned;
+today this is a backend setting). You can never loosen past the
+connector default. If you need to make an Ask tool into Auto, edit the brief
+to scope what the tool may do, not the tier it runs in.
+
+## Approving from the web
+
+`/approvals` polls every 10 seconds. Each card shows:
+
+- The agent that staged the action
+- A one-line summary
+- The full tool payload (expandable)
+- Approve and Reject buttons, both of which land in the audit log
+
+The sidebar badge in the app shell counts pending approvals across all your
+agents, so you don't have to keep the tab open.
+
+## Approving from Slack
+
+If you've installed the Aki bot, every Ask-tier action also DMs the user
+who owns the agent (or the channel that asked, for `@aki-sales`–style
+mentions). The DM has approve/reject buttons that map to the same `/approvals`
+endpoints; you don't need to leave Slack.
+
+> The Slack approve button is signed with a short-lived token and is
+> single-use. Forwarding the DM does not let someone else approve on your
+> behalf.
+
+## What gets recorded
+
+Both the staged action and the approve/reject decision land in `/audit`:
+
+- `chat.consent.staged` — the agent asked for permission
+- `chat.consent.approved` or `chat.consent.rejected` — your decision, with
+  the human who decided, the channel they decided in (web vs Slack), and
+  the timestamp
+
+The whole chain is hash-verifiable — see [Audit log](/docs/audit).

@@ -1,0 +1,125 @@
+export const metadata = {
+  title: "Troubleshooting — Aki docs",
+  description: "Top ten things that go wrong, with fixes. Updated as we see new failure modes.",
+};
+
+# Troubleshooting
+
+In order of frequency. If your issue isn't here,
+[email us](mailto:hello@tryclean.ai) — we add to this page every week.
+
+## 1. "Waking up your agent…" for 10+ seconds
+
+Expected on the first turn after 15 minutes of idle. We hibernate idle agent
+containers to keep beta free; the first message wakes one back up. Subsequent
+turns are instant.
+
+If you regularly need sub-second cold-start, tell us which agent and we'll
+exempt it from hibernation while we figure out a better default.
+
+## 2. OAuth redirect lands on /connect?err=…
+
+The provider rejected the OAuth callback. The error message after `err=` is
+the provider's verbatim response. Common causes:
+
+- **`redirect_uri_mismatch`** — most often hits when our callback URL changes
+  after a beta update. Refresh the page and try again; if it persists, the
+  provider's allowed-callback list needs updating on our side and we want to
+  know.
+- **`invalid_scope`** — the provider revoked or deprecated a scope. Email us
+  the provider name and we'll narrow the request.
+- **`access_denied`** — you (or your admin) clicked "Cancel" on the consent
+  screen. Try again and approve.
+
+## 3. The agent says "I don't have access to that tool"
+
+The agent's tool list is the union of:
+
+- Org-wide connections (`agent_id IS NULL`)
+- This agent's per-agent connections (`agent_id = this_agent`)
+
+If a connection exists but the agent can't see it, check the scope on
+`/connect` — it's probably pinned to a *different* agent. Either reconnect
+under this agent or set the connection to org-wide.
+
+## 4. The agent says "I sent the email" but the email didn't send
+
+Two possible causes:
+
+- **The action staged for consent and is waiting in `/approvals`.** The agent
+  legitimately thought it sent, then the consent layer caught it. Approve
+  from /approvals or from the Slack DM you got.
+- **The provider returned a non-200 response that the agent misread as
+  success.** Check `/audit` — the `chat.tool_call` row will show
+  `status: error` and the provider's error payload. File it as a bug.
+
+## 5. Approve button in Slack does nothing
+
+The approve token is single-use and expires after 24 hours. If the DM is
+older than a day or you've clicked it before, click **Approve from web** at
+the bottom of the DM — it deep-links to /approvals with the same action
+selected.
+
+## 6. /audit shows no rows
+
+You're filtering by an agent that hasn't done anything yet, or your account
+has no events because no agent has run. Switch the filter to **All agents**
+and send the agent a message — the rows will appear immediately.
+
+If you still see nothing after sending a message, the audit writer is
+struggling. Open a thread in the Slack approvals DM with `/aki support
+"audit empty"` and we'll get a logged-in admin to look.
+
+## 7. The agent loses context between turns
+
+Each thread on `/chat/{agentId}` is local browser state for now — we don't
+persist thread history server-side yet (it's tracked for v2). Refreshing the
+page clears the thread but does *not* reset the agent's memory; the agent
+still has its system prompt and connections.
+
+If you want persistent threads today, keep the tab open. We know this is
+unsatisfying — it's a known v2 fix.
+
+## 8. "X-Aki-Agent-Id missing" or 400 on /v1/chat/completions
+
+You hit `/chat` directly without an agent context, and the dispatcher hasn't
+finished routing yet. Wait one tick and refresh, or go to `/agents` and click
+into a specific agent.
+
+If you're calling the API directly (script, third-party integration), every
+request to `/v1/chat/completions` needs an `X-Aki-Agent-Id` header set to a
+valid agent UUID for your org.
+
+## 9. Slack mentions don't get a reply
+
+In order, check:
+
+- The Aki bot is invited to the channel: `/invite @aki`
+- The Slack connection is `active` on `/connect`
+- The agent slug matches what you mentioned (`/agents` shows each agent's
+  slug)
+- The agent isn't archived (archived agents don't respond)
+
+If all four are true and you still get nothing, the mention queue may have
+backed up — wait two minutes. If it still doesn't reply, email us with the
+channel name, the message timestamp, and the agent slug; the audit log will
+tell us if we received the event.
+
+## 10. "Browser mode failed: session expired"
+
+The managed Chrome session timed out (we recycle profiles every 7 days for
+security). Open `/connect`, find the browser-mode connection, click
+**Disable** then **Enable for &lt;Agent&gt;** again. The agent will prompt you
+to log in to the target tool on its next run.
+
+## What to send when you email support
+
+If you write to [hello@tryclean.ai](mailto:hello@tryclean.ai), include:
+
+- The agent slug (from `/agents`)
+- The approximate UTC timestamp of the failure
+- What you expected vs what happened
+- If the failure was in chat, paste the assistant's last reply
+
+That's enough for us to find the trace in our logs and the matching rows in
+`/audit`. We reply within one business day; usually faster.

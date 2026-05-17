@@ -33,6 +33,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         chromium-sandbox \
         ca-certificates \
         curl \
+        git \
         tini \
         fonts-liberation \
         fonts-noto-color-emoji \
