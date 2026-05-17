@@ -97,9 +97,15 @@ class Settings(BaseSettings):
     browser_use_api_key: str | None = None
     browser_use_mcp_base_url: str = "https://api.browser-use.com"
 
-    # Slack — the Aki app (registered at api.slack.com; OAuth flow runs via
-    # Pipedream Connect so the consent screen is white-labeled to "Aki").
+    # Slack — the Aki app (registered at api.slack.com).
+    # While Pipedream Connect free tier doesn't support white-label OAuth,
+    # we use a direct bot token: install Aki to a workspace via api.slack.com
+    # → copy the Bot User OAuth Token → paste here. Same model as a
+    # single-tenant Slack bot. When we eventually flip to Pipedream Business
+    # + custom OAuth apps, this stops being a single token and becomes a
+    # per-org connection.config.bot_token (Pipedream-managed).
     slack_signing_secret: str | None = None         # for /webhooks/slack verification
+    slack_bot_token: str | None = None              # xoxb-… for direct chat.postMessage
     slack_client_id: str | None = None
     slack_app_id: str | None = None
 
