@@ -1,0 +1,86 @@
+export const metadata = {
+  title: "Getting started — Aki docs",
+  description: "Sign up to first running agent in five minutes.",
+};
+
+# Getting started
+
+You'll have a running agent in five minutes. The flow:
+
+1. Sign up. Land in the onboarding wizard.
+2. Answer three questions about the agent you want.
+3. Connect at least one tool (Gmail is the fastest first connection).
+4. Ask the agent to do something concrete.
+
+If you're more visual, the [landing page](/) has a screenshot of the agents
+workspace mid-setup.
+
+## 1. Sign up
+
+Hit **Get on the beta** anywhere on the site. We use Clerk for auth — sign in
+with Google, Microsoft, GitHub, or an email magic link. No card required;
+nothing to fill in beyond an email.
+
+You'll land on `/onboarding` automatically the first time.
+
+## 2. Answer three questions
+
+The onboarding wizard asks for:
+
+- **A name.** Keep it short and human — `Aki Sales`, `Aki Recruiting`, `Aki Ops`.
+  The agent is mentionable from Slack as `@aki-sales` (the slug is auto-generated
+  from the name).
+- **Who the agent is.** Two or three sentences. Role, team, scope. The more
+  grounded, the better the agent's first replies will be.
+- **What tools it needs.** Free-form. We'll show matching connections after.
+- **A first task.** A concrete first job so the agent has a north star, not a
+  vague mission statement.
+
+Click **Create agent**. You'll be dropped into the chat at `/chat/{agentId}`.
+The brief you just wrote is now its system prompt — you can edit it later from
+`/agents/{agentId}`.
+
+## 3. Connect at least one tool
+
+Open `/connect`. The scope selector at the top lets you choose whether new
+connections are **shared with all agents** (org-wide) or **only for this agent**.
+
+For your first agent, the fastest start is:
+
+- **Gmail** — read, draft, send, label, search.
+- **Slack (as a bot)** — installs Aki as a workspace bot so any agent you
+  create is mentionable.
+
+Click **Connect Gmail**. You'll be bounced to Google to grant scopes — we ask
+for the minimum your brief implies. After the redirect back, the connection
+appears under **active** with the agent (or `shared with all agents`) it belongs
+to.
+
+> Heads up: OAuth happens on Google's domain. We never see your password.
+
+## 4. Ask the agent to do something concrete
+
+Back in `/chat/{agentId}`, give it a real task. Concrete beats clever:
+
+```text
+List the 5 most recent emails in my inbox. Just sender and subject.
+```
+
+You'll see:
+
+- **Connecting…** → **Thinking…** → **Running gmail.list_messages…** → streamed reply.
+- Tool calls show up inline beneath the assistant message, with status icons and
+  a one-line label of what each call did.
+- The whole turn is recorded in `/audit` with a hash you can verify locally.
+
+If the first turn takes ~10 seconds, that's the agent container cold-starting.
+Subsequent turns are instant.
+
+## What's next
+
+- Read [Writing a brief](/docs/writing-a-brief) before you create your second
+  agent. There are 2-3 example briefs that have worked well.
+- Read [Connecting tools](/docs/connecting-tools) for the full connector
+  catalog and the per-agent vs org-wide rules.
+- Read [Consent tiers](/docs/consent) before the agent does anything
+  irreversible — you decide what auto-runs and what waits for you.
