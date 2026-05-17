@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { theme } from "@/lib/theme";
 import { AppShell, ErrorBanner, SectionHeader } from "@/components/AppShell";
+import { AgentTabNav } from "@/components/AgentTabNav";
 import { useAgents, useAuthToken } from "@/lib/agents";
 import { agentsApi, ApiError, AgentDetail } from "@/lib/api";
 
@@ -86,6 +87,8 @@ export default function AgentDetailPage({ params }: { params: Promise<{ agentId:
           </div>
         }
       />
+
+      <AgentTabNav agentId={agentId} current="detail"/>
 
       {err && <ErrorBanner>{err}</ErrorBanner>}
 
