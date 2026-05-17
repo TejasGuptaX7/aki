@@ -9,6 +9,7 @@ import { useAgents, pickDefaultAgent } from "@/lib/agents";
 import { approvalsApi } from "@/lib/api";
 import { useAuth } from "@clerk/nextjs";
 import { ErrorBoundary } from "./ErrorBoundary";
+import { NotificationsBell } from "./NotificationsBell";
 
 /**
  * App-wide chrome: 240px sidebar + scrolling main column.
@@ -133,7 +134,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       </aside>
 
-      <main style={{ overflowY: "auto", minHeight: "100vh" }}>
+      <main style={{ overflowY: "auto", minHeight: "100vh", position: "relative" }}>
+        <NotificationsBell/>
         <ErrorBoundary>{children}</ErrorBoundary>
       </main>
     </div>

@@ -202,6 +202,133 @@ export const auditApi = {
   },
 };
 
+// Runs ---------------------------------------------------------------
+
+export type RunStep = {
+  text: string;
+  status: string;
+  started_at: string | null;
+  completed_at: string | null;
+};
+
+export type AgentRun = {
+  id: string;
+  agent_id: string;
+  status: "running" | "done" | "errored" | "canceled";
+  plan: RunStep[];
+  current_index: number;
+  prompt: string;
+  started_at: string | null;
+  completed_at: string | null;
+  error: string | null;
+};
+
+export type RunStartResponse = {
+  run_id: string;
+  status: "running";
+  agent_id: string;
+};
+
+export const runsApi = {
+  list: (gt: Fetcher, agentId: string, limit = 50) =>
+    request<AgentRun[]>(gt, "GET", `/agents/${agentId}/runs?limit=${limit}`),
+  current: async (gt: Fetcher, agentId: string): Promise<AgentRun | null> => {
+    try {
+      return await request<AgentRun>(gt, "GET", `/agents/${agentId}/current-run`);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) return null;
+      throw e;
+    }
+  },
+  start: (gt: Fetcher, agentId: string, prompt: string) =>
+    request<RunStartResponse>(gt, "POST", `/agents/${agentId}/runs`, { prompt }),
+  cancel: (gt: Fetcher, agentId: string, runId: string) =>
+    request<AgentRun>(gt, "POST", `/agents/${agentId}/runs/${runId}/cancel`),
+};
+
+// Schedules ----------------------------------------------------------
+
+export type AgentSchedule = {
+  id: string;
+  agent_id: string;
+  cron: string;
+  prompt: string;
+  enabled: boolean;
+  last_run_at: string | null;
+  next_run_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export const schedulesApi = {
+  list: (gt: Fetcher, agentId: string) =>
+    request<AgentSchedule[]>(gt, "GET", `/agents/${agentId}/schedules`),
+  create: (
+    gt: Fetcher,
+    agentId: string,
+    body: { cron: string; prompt: string; enabled?: boolean },
+  ) => request<AgentSchedule>(gt, "POST", `/agents/${agentId}/schedules`, body),
+  update: (
+    gt: Fetcher,
+    agentId: string,
+    scheduleId: string,
+    body: { cron?: string; prompt?: string; enabled?: boolean },
+  ) =>
+    request<AgentSchedule>(
+      gt,
+      "PATCH",
+      `/agents/${agentId}/schedules/${scheduleId}`,
+      body,
+    ),
+  remove: (gt: Fetcher, agentId: string, scheduleId: string) =>
+    request<void>(
+      gt,
+      "DELETE",
+      `/agents/${agentId}/schedules/${scheduleId}`,
+    ),
+};
+
+// Notifications ------------------------------------------------------
+
+export type Notification = {
+  id: string;
+  agent_id: string | null;
+  kind: "question" | "done" | "error" | string;
+  title: string;
+  body: string;
+  payload: Record<string, unknown>;
+  dismissed_at: string | null;
+  created_at: string;
+};
+
+export const notificationsApi = {
+  list: async (
+    gt: Fetcher,
+    opts?: { dismissed?: boolean | null; limit?: number },
+  ): Promise<Notification[]> => {
+    const params = new URLSearchParams();
+    if (opts && opts.dismissed !== undefined && opts.dismissed !== null) {
+      params.set("dismissed", String(opts.dismissed));
+    } else if (opts?.dismissed === undefined) {
+      // default: undismissed only — match backend default explicitly so the
+      // URL is stable for caching layers in front.
+      params.set("dismissed", "false");
+    }
+    if (opts?.limit) params.set("limit", String(opts.limit));
+    const qs = params.toString();
+    try {
+      return await request<Notification[]>(
+        gt, "GET", `/notifications${qs ? `?${qs}` : ""}`,
+      );
+    } catch (e) {
+      if (e instanceof ApiError && (e.status === 404 || e.status === 405)) return [];
+      throw e;
+    }
+  },
+  dismiss: (gt: Fetcher, id: string) =>
+    request<Notification>(gt, "POST", `/notifications/${encodeURIComponent(id)}/dismiss`),
+};
+
 // Approvals --------------------------------------------------------
 
 export const approvalsApi = {

@@ -81,6 +81,8 @@ export default function AgentDetailPage({ params }: { params: Promise<{ agentId:
         lede={detail ? `Created ${new Date(detail.created_at).toLocaleDateString()} · updated ${new Date(detail.updated_at).toLocaleDateString()}` : null}
         right={
           <div style={{ display: "flex", gap: 10 }}>
+            <Link href={`/agents/${agentId}/runs`} style={secondaryBtn}>Runs</Link>
+            <Link href={`/agents/${agentId}/schedules`} style={secondaryBtn}>Schedules</Link>
             <Link href={`/chat/${agentId}`} style={secondaryBtn}>Open chat</Link>
             <Link href={`/connect?agent_id=${agentId}`} style={secondaryBtn}>Connections</Link>
           </div>
