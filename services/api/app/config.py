@@ -15,6 +15,7 @@ class Settings(BaseSettings):
 
     app_env: Literal["dev", "staging", "prod"] = "dev"
     api_base_url: str = "http://localhost:8000"
+    web_base_url: str = "http://localhost:3000"   # for OAuth callback redirects
 
     # Safety: the X-Dev-Org-Id auth bypass requires BOTH app_env=dev AND this
     # flag set to true. Two checks so a single env misconfiguration in prod
@@ -46,13 +47,18 @@ class Settings(BaseSettings):
     clerk_jwt_issuer: str | None = None
     clerk_jwks_url: str | None = None
     clerk_webhook_secret: str | None = None
+    clerk_secret_key: str | None = None       # for Backend API calls (metadata update)
 
     # Agent
     hermes_gateway_url: str = "http://localhost:8080"
     hermes_api_key: str | None = None
-    hermes_data_dir: str = "/var/lib/aki/hermes"
+    # Per-org workspace root. Default lives in $HOME so it works on a Mac dev
+    # box; production deploys override to /var/lib/aki/hermes or similar.
+    hermes_data_dir: str = "~/.aki/hermes"
     hermes_idle_minutes: int = 15
     agent_runtime: Literal["local", "railway", "modal"] = "local"
+    hermes_model_provider: str = "custom"   # Hermes 0.13 'provider' name
+    hermes_model_name: str = "gpt-5"
 
     # Redis (per-org lifecycle locks, NOTIFY fan-out cache)
     redis_url: str = "redis://localhost:6379/0"
@@ -68,6 +74,12 @@ class Settings(BaseSettings):
     composio_base_url: str = "https://backend.composio.dev"
     composio_webhook_secret: str | None = None
     composio_gmail_auth_config_id: str | None = None
+    composio_slack_auth_config_id: str | None = None
+    composio_slackbot_auth_config_id: str | None = None
+
+    # Browser Use Cloud — long-tail no-API tools.
+    browser_use_api_key: str | None = None
+    browser_use_mcp_base_url: str = "https://api.browser-use.com"
 
 
     @field_validator("cors_origins", mode="before")

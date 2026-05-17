@@ -2,6 +2,11 @@
 
 Stub: in dev, accepts a header `X-Dev-Org-Id` so the API works without Clerk
 configured. In staging/prod, verifies RS256 against the Clerk JWKS.
+
+If the verified JWT has no `org_id` claim (common when the Clerk JWT template
+hasn't propagated, or the user signed in before metadata was set), we fall
+back to a DB lookup on `clerk_user_id`. Requires bypassing RLS for that one
+query — handled in `_lookup_org_by_clerk_user_id`.
 """
 from dataclasses import dataclass
 from uuid import UUID
@@ -9,11 +14,27 @@ from uuid import UUID
 import httpx
 import jwt
 from fastapi import HTTPException, Request, status
+from sqlalchemy import select, text
 
 from app.config import get_settings
 
 settings = get_settings()
 _jwks_cache: dict | None = None
+
+
+async def _lookup_org_by_clerk_user_id(clerk_user_id: str) -> UUID | None:
+    """Fallback when the JWT has no org_id claim. RLS-bypassed because
+    we don't yet know which org context to scope to — that's what we're
+    looking up. Our table owner role can disable row_security per-session."""
+    from app.db import SessionLocal
+    from app.models import User
+
+    async with SessionLocal() as session:
+        await session.execute(text("SET LOCAL row_security = off"))
+        result = await session.execute(
+            select(User.organization_id).where(User.clerk_user_id == clerk_user_id)
+        )
+        return result.scalar_one_or_none()
 
 
 @dataclass(frozen=True)
@@ -62,9 +83,13 @@ async def verify(request: Request) -> Principal:
     except (StopIteration, jwt.PyJWTError) as e:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, f"invalid token: {e}")
 
-    # `org_id` is a custom claim populated by a Clerk JWT template that
-    # joins on our users table; see docs/architecture.md §3.
+    # `org_id` is a custom claim populated by the `aki` Clerk JWT template
+    # (see docs/architecture.md §3). If the claim is missing — common when
+    # the user's session JWT was minted before we backfilled their metadata,
+    # or the template returned an empty value — fall back to a DB lookup.
     org_id = claims.get("org_id")
     if not org_id:
+        org_id = await _lookup_org_by_clerk_user_id(claims["sub"])
+    if not org_id:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "no org for this user")
-    return Principal(user_id=claims["sub"], organization_id=UUID(org_id))
+    return Principal(user_id=claims["sub"], organization_id=UUID(str(org_id)))

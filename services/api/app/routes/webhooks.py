@@ -16,6 +16,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from sqlalchemy import select
 from svix.webhooks import Webhook, WebhookVerificationError
 
+from app.clerk_client import update_user_public_metadata
 from app.config import get_settings
 from app.db import session_for_org, SessionLocal
 from app.limits import limiter
@@ -110,3 +111,18 @@ async def clerk_webhook(request: Request) -> None:
     # implicitly when we first call composio.create(userId) (i.e. when the
     # org's Hermes runtime materializes its MCP session, or when the first
     # OAuth is initiated). org.id is the entity_id either way.
+
+    # Push the new org_id into Clerk's user.public_metadata so the JWT
+    # template's {{user.public_metadata.aki_org_id}} resolves on next sign-in.
+    # If this fails the user can still sign in — they just won't have an
+    # org_id claim and /me will 403 until we retry. Not fatal at signup.
+    if settings.clerk_secret_key:
+        try:
+            await update_user_public_metadata(
+                clerk_user_id, {"aki_org_id": str(org.id)}
+            )
+        except Exception:
+            log.exception(
+                "clerk metadata update failed for user=%s org=%s — JWT will "
+                "lack org_id claim until retry", clerk_user_id, org.id,
+            )

@@ -89,21 +89,43 @@ class ComposioClient:
     async def initiate_oauth(
         self,
         user_id: UUID,
-        auth_config_id: str,
+        toolkit_slug: str,
         callback_url: str,
+        auth_config_id: str | None = None,
     ) -> OAuthLink:
-        """Create an auth-link session. The returned redirect_url is the
-        Composio-hosted OAuth page; user authorizes there and Composio redirects
-        them to callback_url with the connected_account_id wired through."""
+        """Create an OAuth link scoped to this user's tool_router session.
+
+        Passing `auth_config_id` forces Composio to use OUR registered
+        Slack app (e.g. the branded "Aki" one) instead of falling back to
+        a Composio-managed default. Without it the tool_router silently
+        creates its own managed config — that's why bots installed as
+        "Composio" instead of "Aki" before this fix.
+
+        The session-scoped link (not the legacy /connected_accounts/link)
+        is required so the resulting connection is visible to the same
+        agent session that COMPOSIO_MANAGE_CONNECTIONS would create.
+        """
         async with httpx.AsyncClient(timeout=self._timeout) as c:
-            r = await c.post(
-                f"{self._base}/api/v3/connected_accounts/link",
+            # Resolve the user's tool_router session — idempotent server-side.
+            sess_r = await c.post(
+                f"{self._base}/api/v3/tool_router/session",
                 headers=self._headers(),
-                json={
-                    "auth_config_id": auth_config_id,
-                    "user_id": str(user_id),
-                    "callback_url": callback_url,
-                },
+                json={"user_id": str(user_id)},
+            )
+            sess_r.raise_for_status()
+            sid = sess_r.json()["session_id"]
+
+            body: dict[str, Any] = {
+                "toolkit": toolkit_slug,
+                "callback_url": callback_url,
+            }
+            if auth_config_id:
+                body["auth_config_id"] = auth_config_id
+
+            r = await c.post(
+                f"{self._base}/api/v3/tool_router/session/{sid}/link",
+                headers=self._headers(),
+                json=body,
             )
             r.raise_for_status()
             d = r.json()
@@ -111,7 +133,7 @@ class ComposioClient:
                 redirect_url=d["redirect_url"],
                 connected_account_id=d["connected_account_id"],
                 link_token=d["link_token"],
-                expires_at=d["expires_at"],
+                expires_at=d.get("expires_at", ""),
             )
 
     async def get_connection(self, connected_account_id: str) -> ConnectionState:
@@ -143,22 +165,19 @@ def get_composio_client() -> ComposioClient:
     return ComposioClient()
 
 
-# Provider name → settings attribute holding the Composio Auth Config ID.
-# Add a new entry here when you enable a new toolkit in the Composio dashboard.
+# auth_config_id is no longer required for /connect — we use the
+# session-scoped link endpoint which works off toolkit slug. The settings
+# entries are kept around for any future need (e.g. enforcing a specific
+# auth_config), but `auth_config_id_for` is now a no-op lookup that returns
+# None when unset.
 _AUTH_CONFIG_BY_PROVIDER = {
     "gmail": "composio_gmail_auth_config_id",
+    "slack": "composio_slack_auth_config_id",
+    "slackbot": "composio_slackbot_auth_config_id",
 }
 
 
-def auth_config_id_for(provider: str) -> str:
+def auth_config_id_for(provider: str) -> str | None:
     s = get_settings()
     attr = _AUTH_CONFIG_BY_PROVIDER.get(provider)
-    if attr is None:
-        raise ValueError(f"no Composio auth_config_id mapping for provider={provider!r}")
-    value = getattr(s, attr, None)
-    if not value:
-        raise RuntimeError(
-            f"{attr.upper()} not configured — create the auth config in Composio "
-            "dashboard and add its ID to .env"
-        )
-    return value
+    return getattr(s, attr, None) if attr else None

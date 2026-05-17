@@ -71,11 +71,25 @@ async def oauth_start(
         raise HTTPException(503, "COMPOSIO_API_KEY not configured")
 
     redirect = f"{settings.api_base_url}/connections/oauth/callback"
-    auth_config_id = auth_config_id_for(provider)
-    link = await get_composio_client().initiate_oauth(
-        principal.organization_id, auth_config_id, redirect
-    )
+    auth_cfg = auth_config_id_for(provider)
+    try:
+        link = await get_composio_client().initiate_oauth(
+            principal.organization_id, provider, redirect,
+            auth_config_id=auth_cfg,
+        )
+    except Exception as e:
+        log.exception("composio initiate_oauth failed for provider=%s", provider)
+        raise HTTPException(502, f"upstream OAuth init failed: {e}")
 
+    # Dedupe: cleanup any stale pending rows for this (org, provider) so the
+    # /connect page doesn't accumulate them on repeated click-throughs.
+    await db.execute(
+        Connection.__table__.delete().where(
+            (Connection.organization_id == principal.organization_id)
+            & (Connection.provider == provider)
+            & (Connection.status == "pending")
+        )
+    )
     db.add(
         Connection(
             id=uuid4(),
@@ -86,7 +100,7 @@ async def oauth_start(
             config={
                 "source": "composio",
                 "connected_account_id": link.connected_account_id,
-                "auth_config_id": auth_config_id,
+                "auth_config_id": auth_config_id_for(provider),
             },
             status="pending",
         )
@@ -97,6 +111,74 @@ async def oauth_start(
         "url": link.redirect_url,
         "connected_account_id": link.connected_account_id,
     }
+
+
+@router.post("/browser/enable", status_code=status.HTTP_201_CREATED)
+@limiter.limit(lambda: get_settings().rate_limit_oauth)
+async def enable_browser(
+    request: Request,
+    principal: Principal = Depends(get_principal),
+    db: AsyncSession = Depends(get_session),
+) -> dict:
+    """Toggle Browser Use Cloud on for this org. No OAuth — the API key
+    is ours; per-org isolation is Browser Use's session model."""
+    if not get_settings().browser_use_api_key:
+        raise HTTPException(503, "BROWSER_USE_API_KEY not configured")
+
+    existing = (
+        await db.execute(
+            select(Connection).where(
+                Connection.organization_id == principal.organization_id,
+                Connection.provider == "browser",
+            )
+        )
+    ).scalar_one_or_none()
+
+    if existing is None:
+        db.add(
+            Connection(
+                id=uuid4(),
+                organization_id=principal.organization_id,
+                provider="browser",
+                external_account_id=None,
+                scopes=[],
+                config={"source": "browser_use"},
+                status="active",
+            )
+        )
+    else:
+        existing.status = "active"
+        existing.config = {**(existing.config or {}), "source": "browser_use"}
+
+    await db.execute(
+        text("SELECT pg_notify('org_connections_changed', :oid)"),
+        {"oid": str(principal.organization_id)},
+    )
+    await db.commit()
+
+    return {"status": "active", "provider": "browser"}
+
+
+@router.post("/browser/disable", status_code=status.HTTP_204_NO_CONTENT)
+async def disable_browser(
+    principal: Principal = Depends(get_principal),
+    db: AsyncSession = Depends(get_session),
+) -> None:
+    existing = (
+        await db.execute(
+            select(Connection).where(
+                Connection.organization_id == principal.organization_id,
+                Connection.provider == "browser",
+            )
+        )
+    ).scalar_one_or_none()
+    if existing:
+        existing.status = "disabled"
+        await db.execute(
+            text("SELECT pg_notify('org_connections_changed', :oid)"),
+            {"oid": str(principal.organization_id)},
+        )
+        await db.commit()
 
 
 @router.get("/oauth/callback")
@@ -161,5 +243,14 @@ async def oauth_callback(
         )
         await db.commit()
 
-    front_end = get_settings().api_base_url.replace(":8000", ":3000")
-    return RedirectResponse(url=f"{front_end}/chat", status_code=302)
+    return RedirectResponse(
+        url=f"{get_settings().web_base_url.rstrip('/')}/connect?ok=1", status_code=302,
+    )
+
+
+def _failed_redirect(message: str) -> RedirectResponse:
+    """Bounce the user back to /connect with the error in the query string
+    so the UI can render it instead of leaving them stranded on a 500."""
+    from urllib.parse import quote
+    base = get_settings().web_base_url.rstrip("/")
+    return RedirectResponse(url=f"{base}/connect?err={quote(message)}", status_code=302)
