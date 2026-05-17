@@ -34,3 +34,5 @@ redis>=5.0
 svix>=1.34
 slowapi>=0.1.9         # rate limiting; in-memory backend, swap to Redis in prod
 docker>=7.0            # per-org Hermes container lifecycle
+# ─── Long-running agents + cron schedules ────────────────────────────────
+APScheduler>=3.10      # in-process cron for agent_schedules

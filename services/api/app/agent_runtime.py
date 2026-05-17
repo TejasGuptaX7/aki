@@ -374,12 +374,32 @@ async def _boot_container(org_id: UUID) -> OrgContainer:
     port = _pick_free_port()
     api_key = secrets.token_urlsafe(32)
     org_dir = _org_dir(org_id)
+    name = f"aki-hermes-{org_id}"
 
     # Docker SDK is sync; run in a thread so we don't block the event loop.
+    # If a container with our name already exists (orphan from a previous
+    # uvicorn process that didn't reach lifespan shutdown), force-remove
+    # it FIRST. reap_orphans() handles this on startup but doesn't cover
+    # the case where a new container is requested while a stale one for
+    # the same org survived.
     def _run() -> Any:
+        try:
+            existing = client.containers.get(name)
+        except NotFound:
+            existing = None
+        if existing is not None:
+            log.info(
+                "found stale container %s (status=%s) — removing before rebuild",
+                name, existing.status,
+            )
+            try:
+                existing.stop(timeout=5)
+            except Exception:
+                pass
+            existing.remove(force=True)
         return client.containers.run(
             image=IMAGE_TAG,
-            name=f"aki-hermes-{org_id}",
+            name=name,
             detach=True,
             ports={f"{SUPERVISOR_INTERNAL_PORT}/tcp": port},
             volumes={str(org_dir.resolve()): {"bind": "/opt/data", "mode": "rw"}},
@@ -471,10 +491,15 @@ async def hibernate_idle(idle_minutes: int | None = None) -> int:
     settings = get_settings()
     limit_s = (idle_minutes or settings.hermes_idle_minutes) * 60
     now = time.time()
+    # Long-running-agent guard: skip orgs that have at least one agent_run
+    # in status='running'. Without this, a scheduled 20-minute report
+    # would have its container killed at the 15-minute idle mark.
+    from app.scheduler import orgs_with_running_runs  # local to avoid import cycle
+    busy_orgs = await orgs_with_running_runs()
     to_stop = [
         org_id
         for org_id, proc in _REGISTRY.items()
-        if now - proc.last_touched > limit_s
+        if now - proc.last_touched > limit_s and org_id not in busy_orgs
     ]
     for org_id in to_stop:
         log.info("hibernating org=%s", org_id)

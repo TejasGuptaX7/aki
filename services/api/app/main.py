@@ -24,9 +24,13 @@ from app.routes import (
     health,
     me,
     memory,
+    notifications,
+    runs,
+    schedules,
     slack,
     webhooks,
 )
+from app.scheduler import start as scheduler_start, stop as scheduler_stop
 
 settings = get_settings()
 log = logging.getLogger("aki")
@@ -44,6 +48,11 @@ async def lifespan(app: FastAPI):
     except Exception:
         log.exception("reap_orphans failed (continuing startup)")
 
+    try:
+        await scheduler_start()
+    except Exception:
+        log.exception("scheduler_start failed (continuing without schedules)")
+
     task = asyncio.create_task(hibernation_loop())
     try:
         yield
@@ -51,6 +60,10 @@ async def lifespan(app: FastAPI):
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
+        try:
+            await scheduler_stop()
+        except Exception:
+            log.exception("scheduler_stop failed")
         await shutdown_all()
 
 
@@ -112,3 +125,6 @@ app.include_router(agent_internal.router)
 app.include_router(memory.router)
 app.include_router(billing.router)
 app.include_router(slack.router)
+app.include_router(runs.router)
+app.include_router(schedules.router)
+app.include_router(notifications.router)
