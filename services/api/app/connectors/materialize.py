@@ -1,10 +1,11 @@
-"""Build the per-org mcp.servers[] list for hermes.config.yaml.
+"""Build the per-(org, dept) mcp.servers[] list for hermes.config.yaml.
 
-Replaces the old three-layer Connector ABC. The control plane never executes
-tool calls itself — Hermes does, via MCP. This function's only job is to
-translate `connections` rows into the YAML shape Hermes expects, which is then
-written to ${HERMES_DATA_DIR}/<org_id>/hermes.config.yaml at boot (and on
-NOTIFY org_connections_changed).
+Each department gets its own Hermes container with its own MCP server set.
+Composio's session is still keyed on org_id (one MCP session per org, shared
+across departments) — dept_id only narrows which `connections` rows feed
+custom-MCP and browser-use entries.
+
+The control plane never executes tool calls itself — Hermes does, via MCP.
 """
 from __future__ import annotations
 
@@ -20,20 +21,20 @@ from app.models import Connection
 
 
 async def materialize_mcp_servers(
-    db: AsyncSession, org_id: UUID
+    db: AsyncSession, org_id: UUID, dept_id: UUID
 ) -> list[dict[str, Any]]:
-    """Return mcp.servers[] entries for this org.
+    """Return mcp.servers[] entries for this department.
 
-    Composio's MCP URL is session-scoped — we call create_session(org_id) and
-    inline whatever URL/headers it returns. Custom MCP rows are passed through
-    from connection.config verbatim.
+    Composio's MCP URL is session-scoped on org; we call create_session(org_id)
+    and inline whatever URL/headers it returns. Custom MCP rows are passed
+    through from connection.config verbatim.
     """
     settings = get_settings()
     servers: list[dict[str, Any]] = []
 
     rows = (
         await db.execute(
-            select(Connection).where(Connection.organization_id == org_id)
+            select(Connection).where(Connection.department_id == dept_id)
         )
     ).scalars().all()
 
@@ -57,9 +58,6 @@ async def materialize_mcp_servers(
         source = cfg.get("source")
 
         if source == "browser_use" and not seen_browser and settings.browser_use_api_key:
-            # Browser Use Cloud — one shared MCP endpoint, agent creates per-call
-            # sessions via the run_session tool. Per-org isolation is enforced
-            # by Browser Use's session model; we pass org_id as a tag.
             servers.append(
                 {
                     "name": "browser",

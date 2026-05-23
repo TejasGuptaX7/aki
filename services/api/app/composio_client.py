@@ -160,6 +160,29 @@ class ComposioClient:
             )
             r.raise_for_status()
 
+    async def execute_action(
+        self,
+        user_id: UUID,
+        action_slug: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Call a Composio action server-side, without going through Hermes.
+
+        Used by Brain's live-ACL recheck so we can verify channel/page
+        permissions without paying the cold-start of the per-dept agent.
+
+        action_slug is the canonical Composio action id, e.g.
+        "SLACK_FETCH_CONVERSATION_INFO".
+        """
+        async with httpx.AsyncClient(timeout=self._timeout) as c:
+            r = await c.post(
+                f"{self._base}/api/v3/actions/{action_slug}/execute",
+                headers=self._headers(),
+                json={"user_id": str(user_id), "arguments": arguments},
+            )
+            r.raise_for_status()
+            return r.json()
+
 
 def get_composio_client() -> ComposioClient:
     return ComposioClient()

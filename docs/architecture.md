@@ -1,21 +1,26 @@
-# Aki Architecture
+# Aki Program — Architecture
 
 > Source of truth for system design. Update this when decisions change.
-> Last reviewed: 2026-05-16.
+> Last reviewed: 2026-05-23.
 
 ## 1. North star
 
-**Aki is Hermes/OpenClaw for companies.** OpenClaw proved demand for personal
-local-first agents; Aki packages that experience for organizations with the
-trust and isolation enterprises require:
+The Aki program ships three products on one codebase:
 
-- per-org isolated agent runtime
-- centralized OAuth + connector management via Composio
-- hash-chained audit of every tool call + completion
-- a unified product surface across many tools
+- **Hermes** — per-department cloud agents. Employees file a brief; Hermes
+  runs asynchronously on our infra (no laptop required) and reports back.
+  Today's per-org Hermes runtime is being re-keyed to per-(org, department).
+- **Aki** — per-employee local desktop agent (Phase 3). Tauri tray app
+  with an embedded `hermes-agent`. Automates the personal workday.
+- **Brain** — shared, embedding-indexed, ACL-aware memory. Both Hermes and
+  Aki write to it and retrieve from it. Exportable as JSONL for future
+  Qwen fine-tuning.
 
-The moat is **trust + multi-tenancy**, not orchestration capability — Hermes
-already provides subagents, MCP, cron, skills, and memory.
+The moat is the combination: shared Brain across cloud + desktop agents,
+plus trust + multi-tenancy (per-org isolation, hash-chained audit,
+centralized OAuth via Composio). Hermes the runtime already provides
+subagents, MCP, cron, skills, and memory; we're building the platform
+around it.
 
 ## 2. Topology
 

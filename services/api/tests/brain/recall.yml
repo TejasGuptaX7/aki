@@ -1,0 +1,49 @@
+# Labeled recall set for Brain retrieval evaluation.
+#
+# Each item is (query, expected_source_ids). The eval runner seeds a Brain
+# with the named source contents (under `sources:`), embeds them, then runs
+# the queries and computes recall@k.
+#
+# Add real-world failure modes as we hit them. Treat this file as the
+# regression suite for any embedding/retrieval change.
+
+sources:
+  - id: renewal-policy
+    title: "Renewal policy"
+    body: |
+      We push back on any auto-renewal clause longer than 30 days.
+      Cite our standing position and offer a month-to-month alternative.
+      Escalate to legal if the vendor refuses.
+  - id: pto-policy
+    title: "PTO policy"
+    body: |
+      Full-time engineers accrue 1.5 days per month. Carryover capped at
+      10 days into the next calendar year. PTO must be approved by the
+      direct manager at least 5 business days in advance.
+  - id: oncall-runbook
+    title: "Oncall runbook"
+    body: |
+      When the API latency alert fires: first check Grafana dashboard
+      api-latency-p99. If sustained > 1s for 5min, page the database
+      oncall. Don't restart the API; we've had cascading failures from
+      that in the past.
+  - id: hiring-rubric
+    title: "Senior IC hiring rubric"
+    body: |
+      Senior IC candidates must demonstrate: (1) systems thinking on at
+      least one production-scale system in the last 3 years, (2) clear
+      written communication evidenced by either a public blog or
+      design-doc samples, (3) a track record of mentoring at least one
+      junior engineer.
+
+queries:
+  - q: "how do we handle long auto-renew clauses?"
+    expect: [renewal-policy]
+  - q: "what should I do when api latency pages?"
+    expect: [oncall-runbook]
+  - q: "how much vacation do engineers get?"
+    expect: [pto-policy]
+  - q: "criteria for a senior engineer hire"
+    expect: [hiring-rubric]
+  - q: "vendor contract negotiation guidance"
+    expect: [renewal-policy]

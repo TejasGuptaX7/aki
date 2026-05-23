@@ -319,7 +319,7 @@ export default function Home() {
       <nav style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "28px 56px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
           <span style={{ display: "inline-block", width: 28, height: 28, fontFamily: theme.display, fontWeight: 700, fontSize: 36, lineHeight: 0.78, color: theme.ink, letterSpacing: "-0.04em" }}>a</span>
-          <span style={{ fontFamily: theme.body, fontWeight: 600, fontSize: 16, letterSpacing: "0.04em" }}>aki</span>
+          <span style={{ fontFamily: theme.body, fontWeight: 600, fontSize: 16, letterSpacing: "0.04em" }}>hermes</span>
           <span style={{ fontFamily: theme.mono, fontSize: 11, color: theme.inkFaint, letterSpacing: "0.12em" }}>v 0.7</span>
         </div>
         <div style={{ display: "flex", gap: 32, alignItems: "center", fontFamily: theme.body, fontSize: 14, fontWeight: 500, color: theme.inkDim }}>
@@ -341,7 +341,7 @@ export default function Home() {
         <div style={{ display: "grid", gridTemplateColumns: "1fr 780px 1fr", gap: 40, alignItems: "center", minHeight: 760 }}>
           <div>
             <div style={{ fontFamily: theme.mono, fontSize: 11, letterSpacing: "0.24em", textTransform: "uppercase", color: theme.inkFaint, marginBottom: 20 }}>
-              an agent · v 0.7 · private beta
+              Hermes · v 0.7 · private beta
             </div>
             <div style={{ fontFamily: theme.display, fontWeight: 600, fontSize: 72, lineHeight: 0.96, letterSpacing: "-0.025em" }}>
               <span style={{ fontStyle: "italic", fontWeight: 500 }}>A small letter</span>
@@ -357,7 +357,7 @@ export default function Home() {
 
           <div style={{ textAlign: "right" }}>
             <div style={{ fontFamily: theme.body, fontSize: 18, fontWeight: 400, lineHeight: 1.55, color: theme.inkLede, maxWidth: 300, marginLeft: "auto" }}>
-              Aki connects to your team&rsquo;s systems, takes a brief in your voice, and works the backlog through the night. Every action cites its source. You decide what stands.
+              Hermes connects to your team&rsquo;s systems, takes a brief in your voice, and works the backlog through the night. Every action cites its source. You decide what stands.
             </div>
             <div style={{ marginTop: 32, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 12 }}>
               <Show when="signed-out">
@@ -409,7 +409,7 @@ export default function Home() {
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 40, marginTop: 64 }}>
           {[
-            ["Brief", "A short letter in plain language. Aki reads it like a contract."],
+            ["Brief", "A short letter in plain language. Hermes reads it like a contract."],
             ["Connect", "Same access as a senior IC. Scoped tokens, audit per call."],
             ["Cite", "Every action shows its inputs, its policy match, its receipt."],
           ].map(([h, b], i) => (

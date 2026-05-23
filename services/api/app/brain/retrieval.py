@@ -1,0 +1,157 @@
+"""Hybrid retrieval: pgvector cosine + tsvector BM25, fused via RRF.
+
+ACL principals are filtered *after* RRF rather than inside SQL so the SQL
+stays small and easy to debug. Each `brain_sources` row carries an
+`acl_principals` JSON array snapshotted at ingest time; retrieval principals
+(typically `[org_id, dept_id, user_id]`) must intersect that list non-emptily
+to be eligible.
+
+Live ACL re-checks against the source provider (Slack/Notion/Drive) are
+deferred to a later phase — see docs/architecture.md §8.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Iterable
+from uuid import UUID
+
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.brain.acl import is_allowed
+from app.brain.embeddings import embed
+
+
+CANDIDATE_N = 50            # vector + BM25 candidates merged before RRF
+RRF_CONSTANT = 60           # standard RRF dampener
+
+
+@dataclass(frozen=True)
+class BrainHit:
+    source_id: UUID
+    chunk_id: UUID
+    title: str | None
+    content: str
+    score: float
+    provenance: dict
+
+
+async def retrieve(
+    db: AsyncSession,
+    org_id: UUID,
+    *,
+    query: str,
+    principals: Iterable[str],
+    k: int = 8,
+    scope_filter: str | None = None,   # 'org' | 'department' | 'user' | None
+) -> list[BrainHit]:
+    """Retrieve top-k brain chunks for `query` under `principals`."""
+    if not query.strip():
+        return []
+
+    query_vec = (await embed([query]))[0]
+    principal_set = {str(p) for p in principals}
+
+    # Vector top-N: cosine distance ASC (smaller = closer).
+    vec_rows = (
+        await db.execute(
+            text("""
+                select c.id as chunk_id, c.source_id, c.content,
+                       s.title, s.acl_principals, s.kind, s.origin,
+                       s.uri, s.scope, s.scope_id,
+                       (c.embedding <=> (:qv)::vector) as distance
+                from brain_chunks c
+                join brain_sources s on s.id = c.source_id
+                where c.organization_id = :org
+                  and (:scope_filter is null or s.scope = :scope_filter)
+                order by c.embedding <=> (:qv)::vector
+                limit :n
+            """),
+            {
+                "qv": query_vec,
+                "org": str(org_id),
+                "n": CANDIDATE_N,
+                "scope_filter": scope_filter,
+            },
+        )
+    ).mappings().all()
+
+    # BM25 top-N via tsvector + ts_rank_cd.
+    bm25_rows = (
+        await db.execute(
+            text("""
+                select c.id as chunk_id, c.source_id, c.content,
+                       s.title, s.acl_principals, s.kind, s.origin,
+                       s.uri, s.scope, s.scope_id,
+                       ts_rank_cd(c.ts_vector, plainto_tsquery('english', :q)) as rank
+                from brain_chunks c
+                join brain_sources s on s.id = c.source_id
+                where c.organization_id = :org
+                  and (:scope_filter is null or s.scope = :scope_filter)
+                  and c.ts_vector @@ plainto_tsquery('english', :q)
+                order by rank desc
+                limit :n
+            """),
+            {
+                "q": query,
+                "org": str(org_id),
+                "n": CANDIDATE_N,
+                "scope_filter": scope_filter,
+            },
+        )
+    ).mappings().all()
+
+    # Reciprocal rank fusion: score = sum over lists of 1 / (k + rank).
+    fused: dict[UUID, dict] = {}
+    for rank, row in enumerate(vec_rows):
+        cid = row["chunk_id"]
+        fused.setdefault(cid, dict(row))
+        fused[cid]["_score"] = fused[cid].get("_score", 0.0) + 1.0 / (RRF_CONSTANT + rank + 1)
+    for rank, row in enumerate(bm25_rows):
+        cid = row["chunk_id"]
+        fused.setdefault(cid, dict(row))
+        fused[cid]["_score"] = fused[cid].get("_score", 0.0) + 1.0 / (RRF_CONSTANT + rank + 1)
+
+    # ACL filter — snapshot intersection first, then optional live recheck.
+    # We do the cheap snapshot check inline and only live-check survivors.
+    snapshot_eligible = []
+    for row in fused.values():
+        acl = row.get("acl_principals") or []
+        if isinstance(acl, list) and principal_set.intersection(map(str, acl)):
+            snapshot_eligible.append(row)
+
+    snapshot_eligible.sort(key=lambda r: r["_score"], reverse=True)
+
+    # Live recheck — applied only to the top candidates so we don't pay
+    # provider RTTs on rows the user will never see.
+    eligible: list[dict] = []
+    for row in snapshot_eligible[: k * 2]:  # 2× headroom for ACL drops
+        allowed = await is_allowed(
+            row["source_id"], row.get("origin"), row.get("uri"),
+            row.get("acl_principals") or [], principal_set,
+            org_id=org_id,
+        )
+        if allowed:
+            eligible.append(row)
+        if len(eligible) >= k:
+            break
+
+    hits: list[BrainHit] = []
+    for row in eligible[:k]:
+        hits.append(
+            BrainHit(
+                source_id=row["source_id"],
+                chunk_id=row["chunk_id"],
+                title=row.get("title"),
+                content=row["content"],
+                score=float(row["_score"]),
+                provenance={
+                    "kind": row.get("kind"),
+                    "origin": row.get("origin"),
+                    "uri": row.get("uri"),
+                    "scope": row.get("scope"),
+                    "scope_id": str(row["scope_id"]) if row.get("scope_id") else None,
+                },
+            )
+        )
+    return hits

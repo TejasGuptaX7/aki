@@ -23,9 +23,9 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Aki — a small letter, doing large work",
+  title: "Hermes — a small letter, doing large work",
   description:
-    "Aki connects to your team's systems, takes a brief in your voice, and works the backlog through the night. Every action cites its source. You decide what stands.",
+    "Hermes connects to your team's systems, takes a brief in your voice, and works the backlog through the night. Every action cites its source. You decide what stands.",
 };
 
 export default function RootLayout({

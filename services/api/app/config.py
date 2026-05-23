@@ -81,6 +81,23 @@ class Settings(BaseSettings):
     browser_use_api_key: str | None = None
     browser_use_mcp_base_url: str = "https://api.browser-use.com"
 
+    # Brain
+    brain_chunk_tokens: int = 800       # approx tokens per chunk
+    brain_chunk_overlap: int = 100      # chars carried into the next chunk
+
+    # Aki desktop device JWTs (Ed25519). PEM-encoded private key; pyjwt
+    # uses it for signing AND verification (it derives the pubkey from a
+    # private PEM). Generate with:
+    #   ssh-keygen -t ed25519 -m PEM -f device-jwt-key -N ""
+    # then base64-encode contents of `device-jwt-key` and paste into env.
+    device_jwt_signing_key: str | None = None
+
+    # Stripe metering (Phase 5). Until these are set, /v1/billing/rollup
+    # returns the computed totals but doesn't push to Stripe.
+    stripe_secret_key: str | None = None
+    stripe_meter_event_name: str | None = None
+    stripe_customer_id: str | None = None
+
 
     @field_validator("cors_origins", mode="before")
     @classmethod

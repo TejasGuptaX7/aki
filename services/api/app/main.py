@@ -13,10 +13,14 @@ from slowapi.middleware import SlowAPIMiddleware
 from app.agent_runtime import hibernation_loop, reap_orphans, shutdown_all
 from app.config import get_settings
 from app.limits import limiter
-from app.routes import audit, chat, connections, health, me, webhooks
+from app.routes import (
+    audit, billing, brain, chat, connections, departments, devices,
+    health, jobs, me, webhooks,
+)
+from app.scheduler import scheduler_loop
 
 settings = get_settings()
-log = logging.getLogger("aki")
+log = logging.getLogger("hermes")
 
 
 @contextlib.asynccontextmanager
@@ -31,18 +35,21 @@ async def lifespan(app: FastAPI):
     except Exception:
         log.exception("reap_orphans failed (continuing startup)")
 
-    task = asyncio.create_task(hibernation_loop())
+    hib_task = asyncio.create_task(hibernation_loop())
+    sched_task = asyncio.create_task(scheduler_loop())
     try:
         yield
     finally:
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        for t in (hib_task, sched_task):
+            t.cancel()
+        for t in (hib_task, sched_task):
+            with contextlib.suppress(asyncio.CancelledError):
+                await t
         await shutdown_all()
 
 
 app = FastAPI(
-    title="Aki API",
+    title="Hermes API",
     version="0.1.0",
     docs_url="/docs" if settings.app_env != "prod" else None,
     redoc_url="/redoc" if settings.app_env != "prod" else None,
@@ -93,3 +100,8 @@ app.include_router(webhooks.router)
 app.include_router(connections.router)
 app.include_router(chat.router)
 app.include_router(audit.router)
+app.include_router(brain.router)
+app.include_router(devices.router)
+app.include_router(departments.router)
+app.include_router(jobs.router)
+app.include_router(billing.router)

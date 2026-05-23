@@ -16,7 +16,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const path = usePathname();
   const nav = [
     { href: "/chat", label: "Chat" },
+    { href: "/jobs", label: "Jobs" },
     { href: "/connect", label: "Connect" },
+    { href: "/devices", label: "Devices" },
     { href: "/audit", label: "Audit" },
   ];
   return (

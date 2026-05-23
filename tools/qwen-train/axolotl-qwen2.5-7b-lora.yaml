@@ -1,0 +1,72 @@
+# axolotl config: SFT-LoRA on Qwen 2.5 7B with Aki Brain export.
+# Tuned for a single A100 80GB. Drop to 8 ranks + bf16=false for 40GB cards.
+
+base_model: Qwen/Qwen2.5-7B-Instruct
+model_type: AutoModelForCausalLM
+tokenizer_type: AutoTokenizer
+
+load_in_8bit: false
+load_in_4bit: true
+strict: false
+
+# Replace with the path to brain.jsonl exported from /v1/brain/export.
+datasets:
+  - path: ./brain.jsonl
+    type: alpaca
+    field_instruction: instruction
+    field_input: context
+    field_output: response
+
+dataset_prepared_path: last_run_prepared
+val_set_size: 0.1
+output_dir: ./qwen-aki-lora
+
+sequence_len: 4096
+sample_packing: true
+pad_to_sequence_len: true
+
+adapter: lora
+lora_model_dir:
+lora_r: 32
+lora_alpha: 16
+lora_dropout: 0.05
+lora_target_modules:
+  - q_proj
+  - k_proj
+  - v_proj
+  - o_proj
+  - gate_proj
+  - up_proj
+  - down_proj
+
+gradient_accumulation_steps: 4
+micro_batch_size: 2
+num_epochs: 3
+optimizer: paged_adamw_8bit
+lr_scheduler: cosine
+learning_rate: 0.0002
+
+train_on_inputs: false
+group_by_length: false
+bf16: auto
+fp16:
+tf32: false
+
+gradient_checkpointing: true
+early_stopping_patience:
+resume_from_checkpoint:
+local_rank:
+logging_steps: 5
+xformers_attention:
+flash_attention: true
+
+warmup_steps: 20
+evals_per_epoch: 2
+saves_per_epoch: 1
+debug:
+deepspeed:
+weight_decay: 0.0
+fsdp:
+fsdp_config:
+special_tokens:
+  pad_token: "<|endoftext|>"

@@ -1,0 +1,28 @@
+:root {
+  --bg: #15161a;
+  --bg-soft: #1d1f24;
+  --ink: #f1ede0;
+  --ink-dim: rgba(241, 237, 224, 0.66);
+  --ink-faint: rgba(241, 237, 224, 0.36);
+  --hair: rgba(241, 237, 224, 0.12);
+  --accent: #c5ec4f;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  color-scheme: dark;
+}
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--ink);
+}
+
+input, button, textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
