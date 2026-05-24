@@ -26,10 +26,11 @@ Caching
 ``Principal`` caches the user's highest role and a per-department role map so
 that RBAC checks are O(1) and require no extra DB round-trips after auth.
 """
+
 from __future__ import annotations
 
-from enum import Enum
-from typing import Callable
+from collections.abc import Awaitable, Callable
+from enum import StrEnum
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
@@ -38,7 +39,7 @@ from app.auth import Principal
 from app.middleware import get_principal
 
 
-class Permission(str, Enum):
+class Permission(StrEnum):
     """Granular action tokens."""
 
     CHAT_CREATE = "chat:create"
@@ -69,9 +70,7 @@ _ALL_PERMISSIONS = list(Permission)
 ROLE_PERMISSIONS: dict[str, set[Permission]] = {
     "owner": set(_ALL_PERMISSIONS),
     "admin": {
-        p
-        for p in _ALL_PERMISSIONS
-        if p not in (Permission.BILLING_MANAGE, Permission.ADMIN_FULL)
+        p for p in _ALL_PERMISSIONS if p not in (Permission.BILLING_MANAGE, Permission.ADMIN_FULL)
     },
     "member": {
         Permission.CHAT_CREATE,
@@ -126,7 +125,7 @@ def principal_role_at_least(principal: Principal, dept_id: UUID, min_role: str) 
     return actual >= required
 
 
-def require_permission(permission: Permission) -> Callable[..., Principal]:
+def require_permission(permission: Permission) -> Callable[..., Awaitable[Principal]]:
     """FastAPI dependency factory.
 
     Returns a dependency that raises 403 if the principal does not hold
@@ -134,7 +133,7 @@ def require_permission(permission: Permission) -> Callable[..., Principal]:
     """
 
     async def _checker(
-        principal: Principal = Depends(get_principal),
+        principal: Principal = Depends(get_principal),  # noqa: B008  (FastAPI Depends idiom)
     ) -> Principal:
         if not principal_has_permission(principal, permission):
             raise HTTPException(

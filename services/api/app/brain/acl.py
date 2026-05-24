@@ -19,11 +19,12 @@ Per-origin live checks live in this module. What we check vs what we trust:
 The cache is in-process (cachetools.TTLCache). For multi-worker prod, swap
 to Redis using `redis.set(key, "1", ex=300)` — same key shape.
 """
+
 from __future__ import annotations
 
 import logging
 import re
-from typing import Iterable
+from collections.abc import Iterable
 from uuid import UUID
 
 from cachetools import TTLCache
@@ -69,7 +70,11 @@ async def is_allowed(
         return _cache[cache_key]
 
     decision = await _live_check(
-        origin, uri, snapshot_principals, requester_set, org_id,
+        origin,
+        uri,
+        snapshot_principals,
+        requester_set,
+        org_id,
     )
     _cache[cache_key] = decision
     return decision
@@ -79,8 +84,10 @@ _SLACK_CHANNEL_RE = re.compile(r"slack://(?:channel|message)/(C[A-Z0-9]+)")
 
 
 async def _live_check(
-    origin: str, uri: str | None,
-    snapshot: list[str], requester: set[str],
+    origin: str,
+    uri: str | None,
+    snapshot: list[str],
+    requester: set[str],
     org_id: UUID | None,
 ) -> bool:
     """Provider-specific live ACL re-check."""
@@ -135,17 +142,16 @@ async def _live_check_slack(uri: str, org_id: UUID) -> bool:
     except Exception as e:
         # Provider error: fail-open with a warning. Treating a transient
         # 503 as a hard "no" would degrade the agent's recall during outages.
-        log.warning("slack live ACL recheck call failed for %s: %s; trusting snapshot",
-                    channel_id, e)
+        log.warning(
+            "slack live ACL recheck call failed for %s: %s; trusting snapshot", channel_id, e
+        )
         return True
 
     data = (result or {}).get("data") or {}
     channel = data.get("channel") or {}
     if channel.get("is_archived"):
         return False
-    if data.get("error") in ("channel_not_found", "missing_scope"):
-        return False
-    return True
+    return data.get("error") not in ("channel_not_found", "missing_scope")
 
 
 def invalidate_source(source_id: UUID) -> None:

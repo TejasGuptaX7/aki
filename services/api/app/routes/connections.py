@@ -15,6 +15,7 @@ RBAC:
   - create → connection:create (admin+)
   - delete → connection:delete (admin+)
 """
+
 from __future__ import annotations
 
 import logging
@@ -30,10 +31,9 @@ from app.composio_client import auth_config_id_for, get_composio_client
 from app.config import get_settings
 from app.db import session_for_org
 from app.limits import limiter
-from app.middleware import get_principal, get_session
+from app.middleware import get_session
 from app.models import Connection, Department
 from app.rbac import Permission, require_permission
-
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/connections", tags=["connections"])
@@ -45,12 +45,16 @@ async def list_connections(
     db: AsyncSession = Depends(get_session),
 ) -> list[dict]:
     rows = (
-        await db.execute(
-            select(Connection)
-            .where(Connection.organization_id == principal.organization_id)
-            .order_by(Connection.created_at.desc())
+        (
+            await db.execute(
+                select(Connection)
+                .where(Connection.organization_id == principal.organization_id)
+                .order_by(Connection.created_at.desc())
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return [
         {
             "id": str(r.id),
@@ -80,12 +84,14 @@ async def oauth_start(
     auth_cfg = auth_config_id_for(provider)
     try:
         link = await get_composio_client().initiate_oauth(
-            principal.organization_id, provider, redirect,
+            principal.organization_id,
+            provider,
+            redirect,
             auth_config_id=auth_cfg,
         )
     except Exception as e:
         log.exception("composio initiate_oauth failed for provider=%s", provider)
-        raise HTTPException(502, f"upstream OAuth init failed: {e}")
+        raise HTTPException(502, f"upstream OAuth init failed: {e}") from e
 
     # Resolve default department for this org.
     dept_id = await _default_department_id(db, principal)
@@ -214,15 +220,13 @@ async def oauth_callback(
 
     try:
         org_id = UUID(state.user_id)
-    except (ValueError, TypeError):
-        raise HTTPException(400, "composio returned a non-UUID user_id")
+    except (ValueError, TypeError) as e:
+        raise HTTPException(400, "composio returned a non-UUID user_id") from e
 
     async with session_for_org(org_id) as db:
         row = (
             await db.execute(
-                select(Connection).where(
-                    Connection.external_account_id == connected_account_id
-                )
+                select(Connection).where(Connection.external_account_id == connected_account_id)
             )
         ).scalar_one_or_none()
 
@@ -260,7 +264,8 @@ async def oauth_callback(
         await db.commit()
 
     return RedirectResponse(
-        url=f"{get_settings().web_base_url.rstrip('/')}/connect?ok=1", status_code=302,
+        url=f"{get_settings().web_base_url.rstrip('/')}/connect?ok=1",
+        status_code=302,
     )
 
 
@@ -298,5 +303,6 @@ def _failed_redirect(message: str) -> RedirectResponse:
     """Bounce the user back to /connect with the error in the query string
     so the UI can render it instead of leaving them stranded on a 500."""
     from urllib.parse import quote
+
     base = get_settings().web_base_url.rstrip("/")
     return RedirectResponse(url=f"{base}/connect?err={quote(message)}", status_code=302)

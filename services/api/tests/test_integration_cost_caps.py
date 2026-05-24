@@ -1,6 +1,7 @@
 """Integration: cost_caps reads from organizations.settings and enforces
 hard/soft caps correctly.
 """
+
 from __future__ import annotations
 
 import inspect
@@ -8,10 +9,10 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-from fastapi import HTTPException
-
 from app import cost_caps
 from app.cost_caps import check_spend_cap, enforce_spend_cap
+from fastapi import HTTPException
+
 
 def test_cost_caps_queries_organizations_table():
     """Ensure the SQL in check_spend_cap targets organizations.settings."""

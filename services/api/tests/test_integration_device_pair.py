@@ -3,20 +3,19 @@
 Fully exercises the device JWT path without touching Redis or Postgres.
 We monkeypatch the device lookup and generate a fresh Ed25519 keypair.
 """
+
 from __future__ import annotations
 
-import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import jwt
 import pytest
+from app import auth as auth_mod
+from app.config import get_settings
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import HTTPException
-
-from app import auth as auth_mod
-from app.config import get_settings
 
 pytestmark = pytest.mark.asyncio
 
@@ -41,7 +40,7 @@ def _make_token(device_id, org_id, signing_key, exp=None, **extra):
         "user_id": str(uuid4()),
         "org_id": str(org_id),
         "jti": "test-jti",
-        "exp": exp or (datetime.now(tz=timezone.utc) + timedelta(minutes=5)),
+        "exp": exp or (datetime.now(tz=UTC) + timedelta(minutes=5)),
         **extra,
     }
     return jwt.encode(payload, signing_key, algorithm="EdDSA")
@@ -104,7 +103,7 @@ async def test_expired_device_jwt_returns_401(monkeypatch):
         uuid4(),
         uuid4(),
         settings.device_jwt_signing_key,
-        exp=datetime.now(tz=timezone.utc) - timedelta(seconds=1),
+        exp=datetime.now(tz=UTC) - timedelta(seconds=1),
     )
     with pytest.raises(HTTPException) as exc_info:
         await auth_mod._verify_device_jwt(token)

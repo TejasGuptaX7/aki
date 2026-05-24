@@ -6,6 +6,7 @@ then on sentence boundaries, then on whitespace, then forced character-
 window cuts as a last resort. Adds `overlap_chars` of trailing context to
 the next chunk to preserve coherence.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -47,17 +48,13 @@ def chunk_text(
         nonlocal buf
         if buf.strip():
             chunks.append(
-                Chunk(index=len(chunks), content=buf.strip(),
-                      token_count=_approx_tokens(buf))
+                Chunk(index=len(chunks), content=buf.strip(), token_count=_approx_tokens(buf))
             )
 
     def emit_and_seed_overlap():
         nonlocal buf
         flush()
-        if overlap_chars and buf and chunks:
-            buf = buf[-overlap_chars:]
-        else:
-            buf = ""
+        buf = buf[-overlap_chars:] if overlap_chars and buf and chunks else ""
 
     for unit in units:
         sep = "\n\n" if buf and unit.startswith("\n") is False else ""

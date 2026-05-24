@@ -12,6 +12,7 @@ Tables affected:
 Deletion is hard (irreversible). In a future phase we may archive to cold
 storage (S3) before deletion.
 """
+
 from __future__ import annotations
 
 import logging
@@ -114,11 +115,7 @@ async def retention_tick() -> int:
     processed = 0
     async with SessionLocal() as db:
         await db.execute(text("SET LOCAL row_security = off"))
-        orgs = (
-            await db.execute(
-                text("select id from organizations")
-            )
-        ).scalars().all()
+        orgs = (await db.execute(text("select id from organizations"))).scalars().all()
 
         for org_id in orgs:
             try:

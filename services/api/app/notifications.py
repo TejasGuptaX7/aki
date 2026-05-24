@@ -9,6 +9,7 @@ Notification types:
   - job_complete       — async job finished
   - org_invite         — new user invited to org
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -34,6 +35,7 @@ async def send_email(
 
     try:
         import httpx
+
         async with httpx.AsyncClient(timeout=15.0) as c:
             r = await c.post(
                 "https://api.resend.com/emails",

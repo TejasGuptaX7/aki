@@ -9,10 +9,11 @@ to be eligible.
 Live ACL re-checks against the source provider (Slack/Notion/Drive) are
 deferred to a later phase — see docs/architecture.md §8.
 """
+
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable
 from uuid import UUID
 
 from sqlalchemy import text
@@ -22,9 +23,8 @@ from app.brain.acl import is_allowed
 from app.brain.embeddings import embed
 from app.brain.reranker import rerank
 
-
-CANDIDATE_N = 50            # vector + BM25 candidates merged before RRF
-RRF_CONSTANT = 60           # standard RRF dampener
+CANDIDATE_N = 50  # vector + BM25 candidates merged before RRF
+RRF_CONSTANT = 60  # standard RRF dampener
 
 
 @dataclass(frozen=True)
@@ -44,7 +44,7 @@ async def retrieve(
     query: str,
     principals: Iterable[str],
     k: int = 8,
-    scope_filter: str | None = None,   # 'org' | 'department' | 'user' | None
+    scope_filter: str | None = None,  # 'org' | 'department' | 'user' | None
 ) -> list[BrainHit]:
     """Retrieve top-k brain chunks for `query` under `principals`."""
     if not query.strip():
@@ -55,8 +55,9 @@ async def retrieve(
 
     # Vector top-N: cosine distance ASC (smaller = closer).
     vec_rows = (
-        await db.execute(
-            text("""
+        (
+            await db.execute(
+                text("""
                 select c.id as chunk_id, c.source_id, c.content,
                        s.title, s.acl_principals, s.kind, s.origin,
                        s.uri, s.scope, s.scope_id,
@@ -68,19 +69,23 @@ async def retrieve(
                 order by c.embedding <=> (:qv)::vector
                 limit :n
             """),
-            {
-                "qv": query_vec,
-                "org": str(org_id),
-                "n": CANDIDATE_N,
-                "scope_filter": scope_filter,
-            },
+                {
+                    "qv": query_vec,
+                    "org": str(org_id),
+                    "n": CANDIDATE_N,
+                    "scope_filter": scope_filter,
+                },
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
 
     # BM25 top-N via tsvector + ts_rank_cd.
     bm25_rows = (
-        await db.execute(
-            text("""
+        (
+            await db.execute(
+                text("""
                 select c.id as chunk_id, c.source_id, c.content,
                        s.title, s.acl_principals, s.kind, s.origin,
                        s.uri, s.scope, s.scope_id,
@@ -93,14 +98,17 @@ async def retrieve(
                 order by rank desc
                 limit :n
             """),
-            {
-                "q": query,
-                "org": str(org_id),
-                "n": CANDIDATE_N,
-                "scope_filter": scope_filter,
-            },
+                {
+                    "q": query,
+                    "org": str(org_id),
+                    "n": CANDIDATE_N,
+                    "scope_filter": scope_filter,
+                },
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
 
     # Reciprocal rank fusion: score = sum over lists of 1 / (k + rank).
     fused: dict[UUID, dict] = {}
@@ -128,8 +136,11 @@ async def retrieve(
     eligible: list[dict] = []
     for row in snapshot_eligible[: k * 2]:  # 2× headroom for ACL drops
         allowed = await is_allowed(
-            row["source_id"], row.get("origin"), row.get("uri"),
-            row.get("acl_principals") or [], principal_set,
+            row["source_id"],
+            row.get("origin") or "",
+            row.get("uri"),
+            row.get("acl_principals") or [],
+            principal_set,
             org_id=org_id,
         )
         if allowed:

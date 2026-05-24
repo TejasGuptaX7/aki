@@ -17,8 +17,8 @@ During verification we look up the user's memberships once and cache:
   - ``role``                  → highest role across all departments
   - ``is_org_admin``          → True when role is owner or admin
 """
+
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from uuid import UUID
 
 import httpx
@@ -65,9 +65,7 @@ async def _lookup_memberships(
     async with SessionLocal() as session:
         await session.execute(text("SET LOCAL row_security = off"))
         user_row = (
-            await session.execute(
-                select(User.id).where(User.clerk_user_id == clerk_user_id)
-            )
+            await session.execute(select(User.id).where(User.clerk_user_id == clerk_user_id))
         ).scalar_one_or_none()
         if user_row is None:
             return [], {}, "viewer"
@@ -111,8 +109,12 @@ async def _lookup_user_and_orgs_for_device(
         await session.execute(text("SET LOCAL row_security = off"))
         row = (
             await session.execute(
-                select(AkiDevice.user_id, AkiDevice.organization_id,
-                       AkiDevice.revoked_at, User.clerk_user_id)
+                select(
+                    AkiDevice.user_id,
+                    AkiDevice.organization_id,
+                    AkiDevice.revoked_at,
+                    User.clerk_user_id,
+                )
                 .join(User, User.id == AkiDevice.user_id)
                 .where(AkiDevice.id == device_id)
             )
@@ -124,9 +126,7 @@ async def _lookup_user_and_orgs_for_device(
             return None
         # Touch last_seen_at on every authenticated call. Best-effort.
         await session.execute(
-            text(
-                "update aki_devices set last_seen_at = now() where id = :id"
-            ),
+            text("update aki_devices set last_seen_at = now() where id = :id"),
             {"id": str(device_id)},
         )
         await session.commit()
@@ -158,15 +158,13 @@ async def _lookup_user_and_orgs_for_device(
 
 @dataclass(frozen=True)
 class Principal:
-    user_id: str                       # Clerk user id (e.g. "user_2abc…")
-    organization_id: UUID              # resolved from users table
+    user_id: str  # Clerk user id (e.g. "user_2abc…")
+    organization_id: UUID  # resolved from users table
     department_ids: list[UUID] = field(default_factory=list)
-    device_id: UUID | None = None      # set when authed via Aki device JWT
-    role: str = "viewer"               # highest role across all departments
-    is_org_admin: bool = False         # True when role is owner or admin
-    department_roles: dict[UUID, str] = field(
-        default_factory=dict, hash=False, compare=False
-    )
+    device_id: UUID | None = None  # set when authed via Aki device JWT
+    role: str = "viewer"  # highest role across all departments
+    is_org_admin: bool = False  # True when role is owner or admin
+    department_roles: dict[UUID, str] = field(default_factory=dict, hash=False, compare=False)
 
 
 async def _get_jwks() -> dict:
@@ -204,12 +202,12 @@ async def _verify_device_jwt(token: str) -> Principal:
             options={"require": ["iss", "sub", "exp", "aud"]},
         )
     except jwt.PyJWTError as e:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, f"invalid device token: {e}")
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, f"invalid device token: {e}") from e
 
     try:
         device_id = UUID(claims["sub"])
-    except (KeyError, ValueError):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "device token: bad sub")
+    except (KeyError, ValueError) as e:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "device token: bad sub") from e
 
     looked_up = await _lookup_user_and_orgs_for_device(device_id)
     if looked_up is None:
@@ -266,7 +264,7 @@ async def verify(request: Request) -> Principal:
             options={"require": ["iss", "sub", "exp"]},
         )
     except (StopIteration, jwt.PyJWTError) as e:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, f"invalid token: {e}")
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, f"invalid token: {e}") from e
 
     org_id = claims.get("org_id")
     if not org_id:

@@ -7,6 +7,7 @@ conversation is persisted back into Brain so future turns can cite it.
 This module is the "spine" of the three-product architecture: it ensures that
 both Hermes (cloud) and Aki (desktop) share context through Brain.
 """
+
 from __future__ import annotations
 
 import logging
@@ -51,6 +52,7 @@ async def hydrate_messages(
     4. Return the augmented messages list.
     """
     from app.feature_flags import is_enabled
+
     if not await is_enabled("brain_hydration", org_id):
         return messages
 
@@ -96,7 +98,9 @@ async def hydrate_messages(
     max_chars = _MAX_BRAIN_CONTEXT_TOKENS * 4  # rough heuristic
 
     for i, hit in enumerate(hits, 1):
-        part = f"[{i}] Source: {hit.title} ({hit.kind}, {hit.origin})\n{hit.content}\n"
+        kind = hit.provenance.get("kind", "unknown")
+        origin = hit.provenance.get("origin", "unknown")
+        part = f"[{i}] Source: {hit.title} ({kind}, {origin})\n{hit.content}\n"
         if current_len + len(part) > max_chars:
             break
         context_parts.append(part)
@@ -178,7 +182,7 @@ async def persist_turn(
         except Exception:
             log.exception("embed failed for turn; storing source w/o chunks")
             return source.id
-        for chunk, vec in zip(chunks, embeddings):
+        for chunk, vec in zip(chunks, embeddings, strict=False):
             db.add(
                 BrainChunk(
                     source_id=source.id,
@@ -196,7 +200,12 @@ async def persist_turn(
         actor=user_id,
         action="brain.ingest",
         target=str(source.id),
-        payload={"kind": kind, "origin": origin, "uri": uri,
-                 "chunks": len(chunks), "title": source_title},
+        payload={
+            "kind": kind,
+            "origin": origin,
+            "uri": uri,
+            "chunks": len(chunks),
+            "title": source_title,
+        },
     )
     return source.id

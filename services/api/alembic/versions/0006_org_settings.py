@@ -7,10 +7,10 @@ Revision ID: 0006
 Revises: 0005
 Create Date: 2026-05-24
 """
-from alembic import op
-import sqlalchemy as sa
-from sqlalchemy.dialects.postgresql import JSONB
 
+import sqlalchemy as sa
+from alembic import op
+from sqlalchemy.dialects.postgresql import JSONB
 
 revision = "0006"
 down_revision = "0005"
@@ -28,9 +28,7 @@ def upgrade() -> None:
             nullable=True,
         ),
     )
-    op.execute(
-        "create index if not exists ix_org_settings on organizations using gin (settings)"
-    )
+    op.execute("create index if not exists ix_org_settings on organizations using gin (settings)")
 
     op.add_column(
         "organizations",

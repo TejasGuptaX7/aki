@@ -17,15 +17,17 @@ Or as a decorator:
     async def my_function():
         ...
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
 import time
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from enum import Enum
 from functools import wraps
-from typing import Any, Callable, TypeVar
+from typing import Any, TypeVar, cast
 
 import redis.asyncio as redis
 
@@ -37,8 +39,8 @@ T = TypeVar("T")
 
 
 class State(Enum):
-    CLOSED = "closed"      # normal operation
-    OPEN = "open"          # failing fast
+    CLOSED = "closed"  # normal operation
+    OPEN = "open"  # failing fast
     HALF_OPEN = "half_open"  # allowing probe
 
 
@@ -95,11 +97,11 @@ class CircuitBreaker:
                     self._half_open_calls = 0
                     log.info("circuit %s entering half-open", self.name)
                 else:
-                    raise CircuitBreakerOpen(self.name)
+                    raise CircuitBreakerOpenError(self.name)
 
             if self._state == State.HALF_OPEN:
                 if self._half_open_calls >= self.half_open_max_calls:
-                    raise CircuitBreakerOpen(self.name)
+                    raise CircuitBreakerOpenError(self.name)
                 self._half_open_calls += 1
 
         try:
@@ -120,19 +122,24 @@ class CircuitBreaker:
                     self._state = State.OPEN
                     log.warning(
                         "circuit %s opened after %d failures: %s",
-                        self.name, self._failure_count, e,
+                        self.name,
+                        self._failure_count,
+                        e,
                     )
             raise
 
     def wrap(self, fn: Callable[..., T]) -> Callable[..., T]:
         """Decorator: use as `@cb.wrap` on async functions."""
         if asyncio.iscoroutinefunction(fn):
+
             @wraps(fn)
             async def _async_wrapper(*args: Any, **kwargs: Any) -> T:
                 async with self():
                     return await fn(*args, **kwargs)
-            return _async_wrapper
+
+            return cast(Callable[..., T], _async_wrapper)
         else:
+
             @wraps(fn)
             def _sync_wrapper(*args: Any, **kwargs: Any) -> T:
                 # For sync functions, run the context manager in an async loop
@@ -146,11 +153,13 @@ class CircuitBreaker:
                     raise
                 else:
                     loop.run_until_complete(cm.__aexit__(None, None, None))
+
             return _sync_wrapper
 
 
-class CircuitBreakerOpen(Exception):
+class CircuitBreakerOpenError(Exception):
     """Raised when the circuit breaker is open."""
+
     def __init__(self, name: str) -> None:
         super().__init__(f"circuit breaker '{name}' is open")
         self.name = name

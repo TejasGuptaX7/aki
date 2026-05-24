@@ -8,20 +8,18 @@ Nightly job that compresses episodic memories (chat turns, job summaries) into:
 This prevents linear growth of the vector store and improves retrieval quality
 by surfacing higher-level abstractions.
 """
+
 from __future__ import annotations
 
-import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.brain.chunker import chunk_text
-from app.brain.embeddings import embed
-from app.config import get_settings
-from app.models import BrainChunk, BrainFact, BrainSource, Job
+from app.models import BrainFact, BrainSource, Job
 
 log = logging.getLogger(__name__)
 
@@ -32,7 +30,7 @@ async def run_consolidation(db: AsyncSession, org_id: UUID) -> dict:
     Returns a summary dict of what was created.
     """
     log.info("consolidation started for org=%s", org_id)
-    results = {"facts": 0, "patterns": 0, "summaries": 0, "errors": []}
+    results: dict[str, Any] = {"facts": 0, "patterns": 0, "summaries": 0, "errors": []}
 
     try:
         facts = await _extract_facts(db, org_id)
@@ -69,18 +67,25 @@ async def _extract_facts(db: AsyncSession, org_id: UUID) -> list[BrainFact]:
     Phase 5: Replace with LLM-based extraction for richer semantic facts.
     """
     # Get recent job summaries (last 7 days) that haven't been processed
-    week_ago = datetime.now(timezone.utc) - __import__("datetime").timedelta(days=7)
+    week_ago = datetime.now(UTC) - __import__("datetime").timedelta(days=7)
 
     jobs = (
-        await db.execute(
-            select(Job).where(
-                Job.organization_id == org_id,
-                Job.status == "done",
-                Job.updated_at >= week_ago,
-                Job.result_summary.isnot(None),
-            ).order_by(Job.updated_at.desc()).limit(100)
+        (
+            await db.execute(
+                select(Job)
+                .where(
+                    Job.organization_id == org_id,
+                    Job.status == "done",
+                    Job.updated_at >= week_ago,
+                    Job.result_summary.isnot(None),
+                )
+                .order_by(Job.updated_at.desc())
+                .limit(100)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     facts: list[BrainFact] = []
     for job in jobs:
@@ -123,8 +128,9 @@ async def _extract_patterns(db: AsyncSession, org_id: UUID) -> list[dict]:
     """
     # Aggregate tool calls from audit_log
     rows = (
-        await db.execute(
-            text("""
+        (
+            await db.execute(
+                text("""
                 select
                   payload->>'tool' as tool_name,
                   count(*) as cnt
@@ -137,9 +143,12 @@ async def _extract_patterns(db: AsyncSession, org_id: UUID) -> list[dict]:
                 order by cnt desc
                 limit 20
             """),
-            {"org": str(org_id)},
+                {"org": str(org_id)},
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
 
     patterns = [dict(r) for r in rows]
     log.info("extracted %d tool patterns for org=%s", len(patterns), org_id)
@@ -151,18 +160,25 @@ async def _summarize_old_episodes(db: AsyncSession, org_id: UUID) -> int:
 
     Returns the number of episodes summarized.
     """
-    thirty_days_ago = datetime.now(timezone.utc) - __import__("datetime").timedelta(days=30)
+    thirty_days_ago = datetime.now(UTC) - __import__("datetime").timedelta(days=30)
 
     # Find old chat_turn sources
     old_sources = (
-        await db.execute(
-            select(BrainSource).where(
-                BrainSource.organization_id == org_id,
-                BrainSource.kind == "chat_turn",
-                BrainSource.created_at < thirty_days_ago,
-            ).order_by(BrainSource.created_at.desc()).limit(50)
+        (
+            await db.execute(
+                select(BrainSource)
+                .where(
+                    BrainSource.organization_id == org_id,
+                    BrainSource.kind == "chat_turn",
+                    BrainSource.created_at < thirty_days_ago,
+                )
+                .order_by(BrainSource.created_at.desc())
+                .limit(50)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     if not old_sources:
         return 0

@@ -19,12 +19,13 @@ RBAC:
   - list_devices → device:read (own devices; admins see all org devices)
   - revoke_device → device:revoke (admin can revoke any; users own only)
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import jwt
@@ -40,7 +41,6 @@ from app.config import get_settings
 from app.middleware import get_principal, get_session
 from app.models import AkiDevice, User
 from app.rbac import Permission, principal_has_permission, require_permission
-
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/devices", tags=["devices"])
@@ -80,9 +80,7 @@ async def pair_start(
 
     # Look up the internal user_id for the principal so we can stash both.
     user_id = (
-        await db.execute(
-            select(User.id).where(User.clerk_user_id == principal.user_id)
-        )
+        await db.execute(select(User.id).where(User.clerk_user_id == principal.user_id))
     ).scalar_one_or_none()
     if user_id is None:
         raise HTTPException(404, "user not found (webhook not yet processed?)")
@@ -125,9 +123,7 @@ class PairCompleteResponse(BaseModel):
 
 
 @router.post("/pair/complete", response_model=PairCompleteResponse)
-async def pair_complete(
-    body: PairCompleteBody, request: Request
-) -> PairCompleteResponse:
+async def pair_complete(body: PairCompleteBody, request: Request) -> PairCompleteResponse:
     """Public endpoint — the desktop client has no Clerk session. The 6-digit
     code is the auth here; rate-limit later when we wire slowapi storage."""
     settings = get_settings()
@@ -146,9 +142,10 @@ async def pair_complete(
     clerk_user_id = payload["clerk_user_id"]
 
     from app.db import session_for_org
+
     device_id = uuid4()
     jti = secrets.token_urlsafe(16)
-    expires = datetime.now(tz=timezone.utc) + DEVICE_JWT_LIFETIME
+    expires = datetime.now(tz=UTC) + DEVICE_JWT_LIFETIME
 
     async with session_for_org(organization_id) as db:
         db.add(
@@ -185,9 +182,7 @@ async def pair_complete(
         algorithm="EdDSA",
     )
 
-    return PairCompleteResponse(
-        device_id=device_id, device_jwt=token, expires_at=expires
-    )
+    return PairCompleteResponse(device_id=device_id, device_jwt=token, expires_at=expires)
 
 
 class DeviceOut(BaseModel):
@@ -206,29 +201,35 @@ async def list_devices(
     # Admins see all org devices; regular users see only their own.
     if principal_has_permission(principal, Permission.DEVICE_REVOKE):
         rows = (
-            await db.execute(
-                select(AkiDevice)
-                .where(AkiDevice.organization_id == principal.organization_id)
-                .order_by(AkiDevice.created_at.desc())
+            (
+                await db.execute(
+                    select(AkiDevice)
+                    .where(AkiDevice.organization_id == principal.organization_id)
+                    .order_by(AkiDevice.created_at.desc())
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     else:
         user_id = (
-            await db.execute(
-                select(User.id).where(User.clerk_user_id == principal.user_id)
-            )
+            await db.execute(select(User.id).where(User.clerk_user_id == principal.user_id))
         ).scalar_one_or_none()
         if user_id is None:
             return []
 
         rows = (
-            await db.execute(
-                select(AkiDevice)
-                .where(AkiDevice.user_id == user_id)
-                .where(AkiDevice.organization_id == principal.organization_id)
-                .order_by(AkiDevice.created_at.desc())
+            (
+                await db.execute(
+                    select(AkiDevice)
+                    .where(AkiDevice.user_id == user_id)
+                    .where(AkiDevice.organization_id == principal.organization_id)
+                    .order_by(AkiDevice.created_at.desc())
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
     return [
         DeviceOut(
@@ -261,9 +262,7 @@ async def revoke_device(
     else:
         # Regular users can only revoke their own devices.
         user_id = (
-            await db.execute(
-                select(User.id).where(User.clerk_user_id == principal.user_id)
-            )
+            await db.execute(select(User.id).where(User.clerk_user_id == principal.user_id))
         ).scalar_one_or_none()
         if user_id is None:
             raise HTTPException(404, "user not found")
@@ -281,7 +280,7 @@ async def revoke_device(
         raise HTTPException(404, "device not found")
 
     if row.revoked_at is None:
-        row.revoked_at = datetime.now(tz=timezone.utc)
+        row.revoked_at = datetime.now(tz=UTC)
         await append_audit(
             db,
             principal.organization_id,

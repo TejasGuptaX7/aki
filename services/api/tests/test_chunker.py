@@ -1,4 +1,5 @@
 """Chunker is pure — no external deps. Cover the three split paths."""
+
 from app.brain.chunker import chunk_text
 
 

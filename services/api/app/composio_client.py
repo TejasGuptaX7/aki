@@ -15,6 +15,7 @@ Concepts:
   in the TS SDK — a stateful MCP endpoint that automatically surfaces tools for
   all of the user's active connected_accounts.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -30,25 +31,25 @@ from app.config import get_settings
 @dataclass(frozen=True)
 class OAuthLink:
     redirect_url: str
-    connected_account_id: str           # ca_…
+    connected_account_id: str  # ca_…
     link_token: str
     expires_at: str
 
 
 @dataclass(frozen=True)
 class ConnectionState:
-    id: str                             # ca_…
+    id: str  # ca_…
     user_id: str
-    status: str                         # INITIALIZING | ACTIVE | FAILED | …
-    toolkit_slug: str                   # gmail
-    auth_config_id: str                 # ac_…
+    status: str  # INITIALIZING | ACTIVE | FAILED | …
+    toolkit_slug: str  # gmail
+    auth_config_id: str  # ac_…
 
 
 @dataclass(frozen=True)
 class ToolRouterSession:
-    session_id: str                     # trs_…
+    session_id: str  # trs_…
     mcp_url: str
-    mcp_type: str                       # "http"
+    mcp_type: str  # "http"
 
 
 class ComposioClient:
@@ -63,30 +64,27 @@ class ComposioClient:
             raise RuntimeError("COMPOSIO_API_KEY not configured")
         return {"x-api-key": self._api_key, "Content-Type": "application/json"}
 
-    async def create_tool_router_session(
-        self, user_id: UUID
-    ) -> ToolRouterSession:
+    async def create_tool_router_session(self, user_id: UUID) -> ToolRouterSession:
         """Equivalent of `composio.create(userId)` in the TS SDK.
 
         Returns the MCP URL + type to drop into hermes.config.yaml's
         mcp.servers[]. The session is stateful: it picks up newly-connected
         accounts for the same user_id automatically.
         """
-        async with CB_REGISTRY["composio"]():
-            async with httpx.AsyncClient(timeout=self._timeout) as c:
-                r = await c.post(
-                    f"{self._base}/api/v3/tool_router/session",
-                    headers=self._headers(),
-                    json={"user_id": str(user_id)},
-                )
-                r.raise_for_status()
-                d = r.json()
-                mcp = d["mcp"]
-                return ToolRouterSession(
-                    session_id=d["session_id"],
-                    mcp_url=mcp["url"],
-                    mcp_type=mcp.get("type", "http"),
-                )
+        async with CB_REGISTRY["composio"](), httpx.AsyncClient(timeout=self._timeout) as c:
+            r = await c.post(
+                f"{self._base}/api/v3/tool_router/session",
+                headers=self._headers(),
+                json={"user_id": str(user_id)},
+            )
+            r.raise_for_status()
+            d = r.json()
+            mcp = d["mcp"]
+            return ToolRouterSession(
+                session_id=d["session_id"],
+                mcp_url=mcp["url"],
+                mcp_type=mcp.get("type", "http"),
+            )
 
     async def initiate_oauth(
         self,
@@ -139,21 +137,20 @@ class ComposioClient:
             )
 
     async def get_connection(self, connected_account_id: str) -> ConnectionState:
-        async with CB_REGISTRY["composio"]():
-            async with httpx.AsyncClient(timeout=self._timeout) as c:
-                r = await c.get(
-                    f"{self._base}/api/v3/connected_accounts/{connected_account_id}",
-                    headers=self._headers(),
-                )
-                r.raise_for_status()
-                d = r.json()
-                return ConnectionState(
-                    id=d["id"],
-                    user_id=d["user_id"],
-                    status=(d.get("status") or "INITIALIZING").upper(),
-                    toolkit_slug=(d.get("toolkit") or {}).get("slug", "unknown"),
-                    auth_config_id=(d.get("auth_config") or {}).get("id", ""),
-                )
+        async with CB_REGISTRY["composio"](), httpx.AsyncClient(timeout=self._timeout) as c:
+            r = await c.get(
+                f"{self._base}/api/v3/connected_accounts/{connected_account_id}",
+                headers=self._headers(),
+            )
+            r.raise_for_status()
+            d = r.json()
+            return ConnectionState(
+                id=d["id"],
+                user_id=d["user_id"],
+                status=(d.get("status") or "INITIALIZING").upper(),
+                toolkit_slug=(d.get("toolkit") or {}).get("slug", "unknown"),
+                auth_config_id=(d.get("auth_config") or {}).get("id", ""),
+            )
 
     async def revoke(self, connected_account_id: str) -> None:
         async with httpx.AsyncClient(timeout=self._timeout) as c:
@@ -177,15 +174,14 @@ class ComposioClient:
         action_slug is the canonical Composio action id, e.g.
         "SLACK_FETCH_CONVERSATION_INFO".
         """
-        async with CB_REGISTRY["composio"]():
-            async with httpx.AsyncClient(timeout=self._timeout) as c:
-                r = await c.post(
-                    f"{self._base}/api/v3/actions/{action_slug}/execute",
-                    headers=self._headers(),
-                    json={"user_id": str(user_id), "arguments": arguments},
-                )
-                r.raise_for_status()
-                return r.json()
+        async with CB_REGISTRY["composio"](), httpx.AsyncClient(timeout=self._timeout) as c:
+            r = await c.post(
+                f"{self._base}/api/v3/actions/{action_slug}/execute",
+                headers=self._headers(),
+                json={"user_id": str(user_id), "arguments": arguments},
+            )
+            r.raise_for_status()
+            return r.json()
 
 
 def get_composio_client() -> ComposioClient:

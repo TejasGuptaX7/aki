@@ -10,10 +10,10 @@ Usage:
     if await is_enabled("brain_hydration", org_id="uuid"):
         ...
 """
+
 from __future__ import annotations
 
 import logging
-from typing import Any
 from uuid import UUID
 
 import redis.asyncio as redis

@@ -3,9 +3,10 @@
 Enforces security headers, input sanitization, and other defense-in-depth
 measures required for enterprise deployments.
 """
+
 from __future__ import annotations
 
-from fastapi import Request, Response
+from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 
@@ -26,8 +27,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-XSS-Protection"] = "1; mode=block"
         # Strict transport security (only in prod)
         from app.config import get_settings
+
         if get_settings().app_env == "prod":
-            response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains; preload"
+            response.headers["Strict-Transport-Security"] = (
+                "max-age=63072000; includeSubDomains; preload"
+            )
         # Referrer policy
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         # Permissions policy

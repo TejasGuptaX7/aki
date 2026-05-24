@@ -7,6 +7,7 @@ RBAC:
   - list → audit:read (all authenticated users)
   - append-only; no write endpoints.
 """
+
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
@@ -18,15 +19,18 @@ from app.middleware import get_session
 from app.models import AuditLog
 from app.rbac import Permission, require_permission
 
-
 router = APIRouter(prefix="/audit", tags=["audit"])
 
 
 @router.get("")
 async def list_audit(
     limit: int = Query(50, ge=1, le=200),
-    after_id: int | None = Query(None, description="return rows with id > after_id (forward paging)"),
-    before_id: int | None = Query(None, description="return rows with id < before_id (backward paging)"),
+    after_id: int | None = Query(
+        None, description="return rows with id > after_id (forward paging)"
+    ),
+    before_id: int | None = Query(
+        None, description="return rows with id < before_id (backward paging)"
+    ),
     principal: Principal = Depends(require_permission(Permission.AUDIT_READ)),
     db: AsyncSession = Depends(get_session),
 ) -> dict:

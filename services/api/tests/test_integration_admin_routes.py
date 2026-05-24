@@ -3,16 +3,16 @@
 Tests that admin endpoints require proper permissions using a minimal
 FastAPI app so we don't need the full lifespan/startup.
 """
+
 from __future__ import annotations
 
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI
-from fastapi.testclient import TestClient
-
 from app.auth import Principal
 from app.middleware import get_principal
 from app.rbac import Permission, require_permission
+from fastapi import Depends, FastAPI
+from fastapi.testclient import TestClient
 
 
 def _client_for(principal: Principal):

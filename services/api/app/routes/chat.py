@@ -14,6 +14,7 @@ Hermes' streaming response is OpenAI-compatible chunks interleaved with custom
 `event: hermes.*` lines (see Hermes 0.13 gateway code). We pass every byte to
 the client untouched and parse a side-buffer for audit purposes.
 """
+
 from __future__ import annotations
 
 import json
@@ -22,9 +23,9 @@ import time
 from typing import Any
 from uuid import UUID
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,11 +37,10 @@ from app.config import get_settings
 from app.cost_caps import enforce_spend_cap
 from app.db import session_for_org
 from app.limits import limiter, org_limiter
-from app.middleware import get_principal, get_session
+from app.middleware import get_session
 from app.models import Department
 from app.pricing import estimate_cost_usd
 from app.rbac import Permission, assert_department_access, require_permission
-
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1", tags=["chat"])
@@ -77,9 +77,7 @@ Cite sources for any factual claims pulled from a tool.
 """
 
 
-async def _resolve_department_id(
-    request: Request, principal: Principal, db: AsyncSession
-) -> UUID:
+async def _resolve_department_id(request: Request, principal: Principal, db: AsyncSession) -> UUID:
     """Resolve which department's Hermes container should handle this request.
 
     Order:
@@ -143,9 +141,15 @@ def _parse_sse_blocks(chunk_buf: str):
 
 
 async def _flush_audit(
-    org_id, actor: str, dept_id, container_id: str,
-    tool_events: list[dict], final_usage: dict | None,
-    duration_ms: int, user_text: str, assistant_text: str,
+    org_id,
+    actor: str,
+    dept_id,
+    container_id: str,
+    tool_events: list[dict],
+    final_usage: dict | None,
+    duration_ms: int,
+    user_text: str,
+    assistant_text: str,
 ) -> None:
     """Open a fresh session and write tool_call + chat.complete rows, plus
     a `brain_source(kind=chat_turn)` so future retrieval can cite this
@@ -177,11 +181,15 @@ async def _flush_audit(
         try:
             usage = final_usage or {}
             model_name = get_settings().hermes_model_name
-            cost_usd = estimate_cost_usd(
-                model_name,
-                int(usage.get("prompt_tokens") or 0),
-                int(usage.get("completion_tokens") or 0),
-            ) if usage else 0.0
+            cost_usd = (
+                estimate_cost_usd(
+                    model_name,
+                    int(usage.get("prompt_tokens") or 0),
+                    int(usage.get("completion_tokens") or 0),
+                )
+                if usage
+                else 0.0
+            )
             await append_audit(
                 db,
                 org_id,
@@ -203,8 +211,12 @@ async def _flush_audit(
         if assistant_text.strip() or user_text.strip():
             try:
                 from app.brain import persist_turn
+
                 await persist_turn(
-                    db, org_id, dept_id, actor,
+                    db,
+                    org_id,
+                    dept_id,
+                    actor,
                     kind="chat_turn",
                     user_text=user_text,
                     assistant_text=assistant_text,
@@ -231,6 +243,7 @@ async def chat_completions(
     user_text = ""
     try:
         import json as _json
+
         body_dict = _json.loads(body) if body else {}
         msgs = body_dict.get("messages") or []
         # The last user message is the one being asked right now — use that
@@ -295,46 +308,54 @@ async def chat_completions(
         tail = ""
 
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0)) as c:
-                async with c.stream(
+            async with (
+                httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0)) as c,
+                c.stream(
                     "POST",
                     f"{proc.base_url}/v1/chat/completions",
                     content=body,
                     headers=headers,
-                ) as upstream:
-                    async for raw in upstream.aiter_bytes():
-                        yield raw
+                ) as upstream,
+            ):
+                async for raw in upstream.aiter_bytes():
+                    yield raw
+                    try:
+                        tail += raw.decode("utf-8", errors="replace")
+                    except Exception:
+                        continue
+                    blocks, tail = _parse_sse_blocks(tail)
+                    for event, data in blocks:
+                        if data == "[DONE]":
+                            continue
                         try:
-                            tail += raw.decode("utf-8", errors="replace")
+                            obj: Any = json.loads(data)
                         except Exception:
                             continue
-                        blocks, tail = _parse_sse_blocks(tail)
-                        for event, data in blocks:
-                            if data == "[DONE]":
-                                continue
-                            try:
-                                obj: Any = json.loads(data)
-                            except Exception:
-                                continue
-                            if event and event.startswith("hermes.tool"):
-                                tool_events.append(obj)
-                                continue
-                            if isinstance(obj, dict):
-                                # Accumulate assistant text from OpenAI delta
-                                # chunks so we can index the turn into Brain.
-                                for choice in obj.get("choices") or []:
-                                    piece = ((choice or {}).get("delta") or {}).get("content")
-                                    if isinstance(piece, str):
-                                        assistant_parts.append(piece)
-                                if "usage" in obj and obj["usage"]:
-                                    final_usage = obj["usage"]
+                        if event and event.startswith("hermes.tool"):
+                            tool_events.append(obj)
+                            continue
+                        if isinstance(obj, dict):
+                            # Accumulate assistant text from OpenAI delta
+                            # chunks so we can index the turn into Brain.
+                            for choice in obj.get("choices") or []:
+                                piece = ((choice or {}).get("delta") or {}).get("content")
+                                if isinstance(piece, str):
+                                    assistant_parts.append(piece)
+                            if "usage" in obj and obj["usage"]:
+                                final_usage = obj["usage"]
         finally:
             duration_ms = int((time.monotonic() - started) * 1000)
             try:
                 await _flush_audit(
-                    org_id, actor, dept_id, container_id,
-                    tool_events, final_usage, duration_ms,
-                    user_text, "".join(assistant_parts).strip(),
+                    org_id,
+                    actor,
+                    dept_id,
+                    container_id,
+                    tool_events,
+                    final_usage,
+                    duration_ms,
+                    user_text,
+                    "".join(assistant_parts).strip(),
                 )
             except Exception:
                 log.exception("audit flush failed")

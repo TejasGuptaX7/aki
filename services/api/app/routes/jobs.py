@@ -18,12 +18,13 @@ A job submission carries an optional `department_slug`; if omitted we fall
 back to the same resolution chain as chat (`X-Hermes-Department` header,
 primary membership, org default).
 """
+
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID, uuid4
 
@@ -44,7 +45,6 @@ from app.rbac import (
     principal_has_permission,
     require_permission,
 )
-
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/jobs", tags=["jobs"])
@@ -92,7 +92,9 @@ def _to_out(row: Job) -> JobOut:
 
 
 async def _resolve_dept(
-    request: Request, principal: Principal, db: AsyncSession,
+    request: Request,
+    principal: Principal,
+    db: AsyncSession,
     explicit_slug: str | None,
 ) -> UUID:
     """Same chain as chat.py::_resolve_department_id, with explicit body slug."""
@@ -140,10 +142,10 @@ async def create_job(
     is_scheduled = body.schedule_cron is not None
     status = "queued" if not is_scheduled else "waiting_human"  # waits for cron
     next_run_at = None
-    if is_scheduled:
+    if body.schedule_cron is not None:
         from app.scheduler import _next_fire
-        from datetime import timezone
-        next_run_at = _next_fire(body.schedule_cron, datetime.now(timezone.utc))
+
+        next_run_at = _next_fire(body.schedule_cron, datetime.now(UTC))
 
     job = Job(
         id=uuid4(),
@@ -159,19 +161,29 @@ async def create_job(
     db.add(job)
     await db.flush()
 
-    db.add(JobEvent(job_id=job.id, kind="status_change",
-                    payload={"to": status, "scheduled": is_scheduled}))
+    db.add(
+        JobEvent(
+            job_id=job.id, kind="status_change", payload={"to": status, "scheduled": is_scheduled}
+        )
+    )
     await append_audit(
-        db, principal.organization_id, actor=principal.user_id,
-        action="job.create", target=str(job.id),
-        payload={"department_id": str(dept_id), "scheduled": is_scheduled,
-                 "cron": body.schedule_cron},
+        db,
+        principal.organization_id,
+        actor=principal.user_id,
+        action="job.create",
+        target=str(job.id),
+        payload={
+            "department_id": str(dept_id),
+            "scheduled": is_scheduled,
+            "cron": body.schedule_cron,
+        },
     )
     await db.commit()
 
     if not is_scheduled:
         # Fire-and-forget enqueue. arq doesn't return synchronously.
         from app.worker import enqueue_job
+
         try:
             await enqueue_job(job.id, principal.organization_id)
         except Exception:
@@ -185,8 +197,9 @@ async def create_job(
 @router.get("", response_model=list[JobOut])
 async def list_jobs(
     department_slug: str | None = Query(None, max_length=64),
-    status: Literal["queued", "running", "waiting_human", "done", "failed",
-                    "cancelled"] | None = Query(None),
+    status: (
+        Literal["queued", "running", "waiting_human", "done", "failed", "cancelled"] | None
+    ) = Query(None),
     limit: int = Query(50, ge=1, le=200),
     principal: Principal = Depends(require_permission(Permission.JOB_READ)),
     db: AsyncSession = Depends(get_session),
@@ -216,9 +229,7 @@ async def get_job(
     principal: Principal = Depends(require_permission(Permission.JOB_READ)),
     db: AsyncSession = Depends(get_session),
 ) -> JobOut:
-    row = (
-        await db.execute(select(Job).where(Job.id == job_id))
-    ).scalar_one_or_none()
+    row = (await db.execute(select(Job).where(Job.id == job_id))).scalar_one_or_none()
     if row is None:
         raise HTTPException(404, "job not found")
     # Non-admins can only read jobs in their departments.
@@ -233,9 +244,7 @@ async def cancel_job(
     principal: Principal = Depends(get_principal),
     db: AsyncSession = Depends(get_session),
 ) -> None:
-    row = (
-        await db.execute(select(Job).where(Job.id == job_id))
-    ).scalar_one_or_none()
+    row = (await db.execute(select(Job).where(Job.id == job_id))).scalar_one_or_none()
     if row is None:
         raise HTTPException(404, "job not found")
     # Non-admins can only cancel jobs in their departments.
@@ -243,9 +252,11 @@ async def cancel_job(
         raise HTTPException(404, "job not found")
 
     # RBAC: admin+ can cancel any job; regular members can only cancel their own.
-    if not principal_has_permission(principal, Permission.JOB_CANCEL):
-        if row.actor != principal.user_id:
-            raise HTTPException(403, "only the job creator or an admin can cancel")
+    if (
+        not principal_has_permission(principal, Permission.JOB_CANCEL)
+        and row.actor != principal.user_id
+    ):
+        raise HTTPException(403, "only the job creator or an admin can cancel")
 
     if row.status in ("done", "cancelled"):
         return
@@ -255,11 +266,20 @@ async def cancel_job(
         text("update jobs set status='cancelled', updated_at=now() where id=:id"),
         {"id": str(job_id)},
     )
-    db.add(JobEvent(job_id=job_id, kind="status_change",
-                    payload={"to": "cancelled", "by": principal.user_id}))
+    db.add(
+        JobEvent(
+            job_id=job_id,
+            kind="status_change",
+            payload={"to": "cancelled", "by": principal.user_id},
+        )
+    )
     await append_audit(
-        db, principal.organization_id, actor=principal.user_id,
-        action="job.cancel", target=str(job_id), payload={},
+        db,
+        principal.organization_id,
+        actor=principal.user_id,
+        action="job.cancel",
+        target=str(job_id),
+        payload={},
     )
     await db.commit()
 
@@ -276,9 +296,7 @@ async def stream_events(
     front, then long-polls every 2s for new rows. Closes when status
     transitions to done/failed/cancelled.
     """
-    row = (
-        await db.execute(select(Job).where(Job.id == job_id))
-    ).scalar_one_or_none()
+    row = (await db.execute(select(Job).where(Job.id == job_id))).scalar_one_or_none()
     if row is None:
         raise HTTPException(404, "job not found")
     # Non-admins can only stream events for jobs in their departments.
@@ -293,11 +311,17 @@ async def stream_events(
         # 1) Initial history snapshot.
         async with session_for_org(org_id) as s:
             hist = (
-                await s.execute(
-                    select(JobEvent).where(JobEvent.job_id == job_id)
-                    .order_by(JobEvent.ts.desc()).limit(200)
+                (
+                    await s.execute(
+                        select(JobEvent)
+                        .where(JobEvent.job_id == job_id)
+                        .order_by(JobEvent.ts.desc())
+                        .limit(200)
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
         last_id = hist[0].id if hist else 0
         # Send oldest first so UI can append in order.
         for ev in reversed(hist):
@@ -308,12 +332,16 @@ async def stream_events(
             await asyncio.sleep(2)
             async with session_for_org(org_id) as s:
                 new = (
-                    await s.execute(
-                        select(JobEvent).where(
-                            JobEvent.job_id == job_id, JobEvent.id > last_id
-                        ).order_by(JobEvent.id.asc())
+                    (
+                        await s.execute(
+                            select(JobEvent)
+                            .where(JobEvent.job_id == job_id, JobEvent.id > last_id)
+                            .order_by(JobEvent.id.asc())
+                        )
                     )
-                ).scalars().all()
+                    .scalars()
+                    .all()
+                )
                 for ev in new:
                     yield _sse(ev)
                     last_id = ev.id
@@ -325,12 +353,12 @@ async def stream_events(
                 return
 
     return StreamingResponse(
-        gen(), media_type="text/event-stream",
+        gen(),
+        media_type="text/event-stream",
         headers={"Cache-Control": "no-cache"},
     )
 
 
 def _sse(ev: JobEvent) -> str:
-    payload = {"id": ev.id, "kind": ev.kind, "ts": ev.ts.isoformat(),
-               "payload": ev.payload}
+    payload = {"id": ev.id, "kind": ev.kind, "ts": ev.ts.isoformat(), "payload": ev.payload}
     return f"event: {ev.kind}\ndata: {json.dumps(payload)}\n\n"

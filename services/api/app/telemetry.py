@@ -14,16 +14,18 @@ Usage:
         response = await hermes_chat(...)
         span.set_attribute("llm.usage.prompt_tokens", ...)
 """
+
 from __future__ import annotations
 
 import logging
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Any, Generator
+from typing import Any
 
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
-from opentelemetry.sdk.resources import Resource, SERVICE_NAME, SERVICE_VERSION
+from opentelemetry.sdk.resources import SERVICE_NAME, SERVICE_VERSION, Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace import Span, Status, StatusCode
@@ -33,11 +35,13 @@ from app.config import get_settings
 log = logging.getLogger(__name__)
 
 
-_RESOURCE = Resource.create({
-    SERVICE_NAME: "aki-api",
-    SERVICE_VERSION: "0.1.0",
-    "deployment.environment": get_settings().app_env,
-})
+_RESOURCE = Resource.create(
+    {
+        SERVICE_NAME: "aki-api",
+        SERVICE_VERSION: "0.1.0",
+        "deployment.environment": get_settings().app_env,
+    }
+)
 
 _provider: TracerProvider | None = None
 

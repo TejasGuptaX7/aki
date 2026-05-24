@@ -7,10 +7,11 @@ Organizations can set hard and soft spending caps via the admin console:
 Caps are checked against the current day's accumulated cost from audit_log.
 For efficiency, daily costs are cached in Redis with a 60s TTL.
 """
+
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID
 
 import redis.asyncio as redis
@@ -35,7 +36,7 @@ async def _get_daily_cost(db: AsyncSession, org_id: UUID) -> float:
     """Sum cost_usd for the current UTC day from audit_log.
 
     Uses Redis as a cache to avoid hammering Postgres on every request."""
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
     cache_key = f"{_COST_PREFIX}:{org_id}:{today}"
 
     try:
@@ -78,6 +79,7 @@ async def check_spend_cap(
     raise an HTTPException.
     """
     from app.feature_flags import is_enabled
+
     if not await is_enabled("cost_caps", org_id):
         return True, ""
     # Fetch org settings from the JSONB column
@@ -92,6 +94,7 @@ async def check_spend_cap(
     caps = settings_row or {}
     if isinstance(caps, str):
         import json
+
         try:
             caps = json.loads(caps)
         except Exception:
@@ -111,13 +114,14 @@ async def check_spend_cap(
             f"Daily spend cap exceeded: ${projected:.2f} / ${hard_cap:.2f}. "
             f"Contact your org admin to increase the cap."
         )
-        log.warning("spend_cap_hard blocked org=%s projected=%.2f cap=%.2f", org_id, projected, hard_cap)
+        log.warning(
+            "spend_cap_hard blocked org=%s projected=%.2f cap=%.2f", org_id, projected, hard_cap
+        )
         return False, msg
 
     if soft_cap is not None and projected >= soft_cap:
         return True, (
-            f"Warning: daily spend approaching soft cap "
-            f"(${projected:.2f} / ${soft_cap:.2f})"
+            f"Warning: daily spend approaching soft cap " f"(${projected:.2f} / ${soft_cap:.2f})"
         )
 
     return True, ""

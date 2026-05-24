@@ -13,10 +13,10 @@ Usage:
     async def chat_completions(...):
         ...
 """
+
 from __future__ import annotations
 
 import logging
-from typing import Callable
 
 import redis.asyncio as redis
 from fastapi import Request
@@ -80,12 +80,14 @@ class RedisStorage:
     def incr(self, key: str, expiry: int) -> int:
         """Synchronous incr — slowapi calls this synchronously."""
         import asyncio
+
         try:
             loop = asyncio.get_event_loop()
             return loop.run_until_complete(self._aincr(key, expiry))
         except RuntimeError:
             # No event loop — use a thread pool (last resort)
             import concurrent.futures
+
             with concurrent.futures.ThreadPoolExecutor() as pool:
                 return pool.submit(asyncio.run, self._aincr(key, expiry)).result()
 
@@ -99,11 +101,13 @@ class RedisStorage:
 
     def get(self, key: str) -> int:
         import asyncio
+
         try:
             loop = asyncio.get_event_loop()
             return loop.run_until_complete(self._aget(key))
         except RuntimeError:
             import concurrent.futures
+
             with concurrent.futures.ThreadPoolExecutor() as pool:
                 return pool.submit(asyncio.run, self._aget(key)).result()
 

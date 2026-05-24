@@ -5,8 +5,9 @@ This test fully exercises the JWT shape (claims, issuer, audience, EdDSA
 signature) without touching Redis or Postgres. We monkeypatch the device
 lookup to return a fixed (clerk_user_id, org_id, depts) tuple.
 """
+
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import jwt
@@ -40,7 +41,7 @@ def test_device_jwt_round_trip(monkeypatch):
 
     async def fake_lookup(did):
         assert did == device_id
-        dept_roles = {d: "admin" for d in dept_ids}
+        dept_roles = dict.fromkeys(dept_ids, "admin")
         return (user_clerk, org_id, dept_ids, dept_roles, "admin")
 
     monkeypatch.setattr(auth_mod, "_lookup_user_and_orgs_for_device", fake_lookup)
@@ -53,7 +54,7 @@ def test_device_jwt_round_trip(monkeypatch):
             "user_id": str(uuid4()),
             "org_id": str(org_id),
             "jti": "test-jti",
-            "exp": datetime.now(tz=timezone.utc) + timedelta(minutes=5),
+            "exp": datetime.now(tz=UTC) + timedelta(minutes=5),
         },
         settings.device_jwt_signing_key,
         algorithm="EdDSA",
@@ -84,7 +85,7 @@ def test_revoked_device_rejected(monkeypatch):
             "iss": auth_mod.DEVICE_JWT_ISSUER,
             "aud": auth_mod.DEVICE_JWT_AUDIENCE,
             "sub": str(uuid4()),
-            "exp": datetime.now(tz=timezone.utc) + timedelta(minutes=5),
+            "exp": datetime.now(tz=UTC) + timedelta(minutes=5),
         },
         settings.device_jwt_signing_key,
         algorithm="EdDSA",

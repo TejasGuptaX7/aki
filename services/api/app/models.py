@@ -1,4 +1,5 @@
 """SQLAlchemy ORM models matching the latest Alembic head."""
+
 from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
@@ -14,7 +15,8 @@ from sqlalchemy import (
     Text,
     func,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PgUUID
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PgUUID  # noqa: N811
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -29,9 +31,7 @@ class Organization(Base):
     name: Mapped[str] = mapped_column(String(255))
     settings: Mapped[dict] = mapped_column(JSONB, default=dict)
     stripe_customer_id: Mapped[str | None] = mapped_column(String(255))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class User(Base):
@@ -45,9 +45,7 @@ class User(Base):
         ForeignKey("organizations.id", ondelete="restrict"),
         index=True,
     )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class Department(Base):
@@ -64,9 +62,7 @@ class Department(Base):
     hermes_model_name: Mapped[str | None] = mapped_column(String(128))
     hermes_idle_minutes: Mapped[int] = mapped_column(Integer, default=15)
     notification_config: Mapped[dict] = mapped_column(JSONB, default=dict)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class Membership(Base):
@@ -83,9 +79,7 @@ class Membership(Base):
         primary_key=True,
     )
     role: Mapped[str] = mapped_column(String(32), default="member")
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class Connection(Base):
@@ -100,14 +94,12 @@ class Connection(Base):
         ForeignKey("departments.id", ondelete="cascade"),
         index=True,
     )
-    provider: Mapped[str] = mapped_column(String(64))     # gmail | notion | …
+    provider: Mapped[str] = mapped_column(String(64))  # gmail | notion | …
     external_account_id: Mapped[str | None] = mapped_column(String(255))
     scopes: Mapped[list] = mapped_column(JSONB, default=list)
     config: Mapped[dict] = mapped_column(JSONB, default=dict)
     status: Mapped[str] = mapped_column(String(32), default="pending")
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class OrgMemory(Base):
@@ -138,9 +130,7 @@ class AuditLog(Base):
     payload: Mapped[dict] = mapped_column(JSONB, default=dict)
     content_hash: Mapped[str] = mapped_column(String(64))
     prev_hash: Mapped[str | None] = mapped_column(String(64))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class Job(Base):
@@ -169,9 +159,7 @@ class Job(Base):
         PgUUID(as_uuid=True),
         ForeignKey("brain_sources.id", ondelete="set null"),
     )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -186,9 +174,7 @@ class JobEvent(Base):
         ForeignKey("jobs.id", ondelete="cascade"),
         index=True,
     )
-    ts: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     kind: Mapped[str] = mapped_column(String(32))
     payload: Mapped[dict] = mapped_column(JSONB, default=dict)
 
@@ -200,16 +186,14 @@ class BrainSource(Base):
     organization_id: Mapped[UUID] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("organizations.id", ondelete="cascade")
     )
-    scope: Mapped[str] = mapped_column(String(16))        # org|department|user
+    scope: Mapped[str] = mapped_column(String(16))  # org|department|user
     scope_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True))
     kind: Mapped[str] = mapped_column(String(64))
     origin: Mapped[str] = mapped_column(String(32))
     uri: Mapped[str | None] = mapped_column(String(1024))
     title: Mapped[str | None] = mapped_column(String(512))
     acl_principals: Mapped[list] = mapped_column(JSONB, default=list)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class BrainChunk(Base):
@@ -229,9 +213,7 @@ class BrainChunk(Base):
     token_count: Mapped[int] = mapped_column(Integer)
     embedding: Mapped[list[float] | None] = mapped_column(Vector(1536))
     # ts_vector is a generated column; we don't read it through ORM, only via raw SQL.
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class BrainFact(Base):
@@ -250,9 +232,7 @@ class BrainFact(Base):
         PgUUID(as_uuid=True), ForeignKey("brain_sources.id", ondelete="set null")
     )
     superseded_by: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class BillingUsage(Base):
@@ -271,9 +251,7 @@ class BillingUsage(Base):
     stripe_event_id: Mapped[str | None] = mapped_column(String(128))
     stripe_pushed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     breakdown: Mapped[dict] = mapped_column(JSONB, default=dict)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -296,6 +274,4 @@ class AkiDevice(Base):
     device_jwt_jti: Mapped[str | None] = mapped_column(String(64))
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

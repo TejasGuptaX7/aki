@@ -13,11 +13,12 @@ parsing the standard 5-field format ourselves for the few common cases
 (every minute ticks the scheduler, but the job is only enqueued once per
 matched window thanks to next_run_at advancement).
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy import text
@@ -27,9 +28,9 @@ from app.db import SessionLocal
 log = logging.getLogger("aki.scheduler")
 
 SCHEDULER_TICK_SECONDS = 30
-BILLING_TICK_HOUR_UTC = 1       # 01:00 UTC nightly
-CONSOLIDATION_TICK_HOUR_UTC = 3   # 03:00 UTC nightly
-RETENTION_TICK_HOUR_UTC = 4       # 04:00 UTC nightly
+BILLING_TICK_HOUR_UTC = 1  # 01:00 UTC nightly
+CONSOLIDATION_TICK_HOUR_UTC = 3  # 03:00 UTC nightly
+RETENTION_TICK_HOUR_UTC = 4  # 04:00 UTC nightly
 
 
 async def scheduler_loop() -> None:
@@ -51,14 +52,15 @@ async def scheduler_loop() -> None:
         except Exception:
             log.exception("scheduler tick failed")
 
-        now_utc = datetime.now(timezone.utc)
+        now_utc = datetime.now(UTC)
         today = now_utc.date()
 
         try:
             if now_utc.hour == BILLING_TICK_HOUR_UTC and last_billing_day != today:
                 count = await _billing_tick()
-                log.info("billing tick: rolled up %d org(s) for %s",
-                         count, today - timedelta(days=1))
+                log.info(
+                    "billing tick: rolled up %d org(s) for %s", count, today - timedelta(days=1)
+                )
                 last_billing_day = today
         except Exception:
             log.exception("billing tick failed")
@@ -88,13 +90,10 @@ async def _billing_tick() -> int:
     Stripe push is gated on STRIPE_SECRET_KEY being set.
     """
     from app.db import SessionLocal
-    from app.config import get_settings
 
-    settings = get_settings()
     rolled = 0
 
-    today = datetime.now(timezone.utc).replace(
-        hour=0, minute=0, second=0, microsecond=0)
+    today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     window_start = today - timedelta(days=1)
     window_end = today
     day = window_start.date()
@@ -102,20 +101,25 @@ async def _billing_tick() -> int:
     async with SessionLocal() as db:
         await db.execute(text("SET LOCAL row_security = off"))
         orgs = (
-            await db.execute(
-                text("""
+            (
+                await db.execute(
+                    text("""
                     select distinct organization_id
                     from audit_log
                     where created_at >= :start and created_at < :end
                 """),
-                {"start": window_start, "end": window_end},
+                    {"start": window_start, "end": window_end},
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
         for org_id in orgs:
             row = (
-                await db.execute(
-                    text("""
+                (
+                    await db.execute(
+                        text("""
                         select
                           coalesce(sum((payload->>'cost_usd')::numeric), 0) as cost,
                           sum(case when action='chat.complete' then 1 else 0 end) as chats,
@@ -125,9 +129,12 @@ async def _billing_tick() -> int:
                         where organization_id = :org
                           and created_at >= :start and created_at < :end
                     """),
-                    {"org": str(org_id), "start": window_start, "end": window_end},
+                        {"org": str(org_id), "start": window_start, "end": window_end},
+                    )
                 )
-            ).mappings().one()
+                .mappings()
+                .one()
+            )
 
             await db.execute(
                 text("""
@@ -167,15 +174,11 @@ async def _consolidation_tick() -> int:
     processed = 0
     async with SessionLocal() as db:
         await db.execute(text("SET LOCAL row_security = off"))
-        orgs = (
-            await db.execute(
-                text("""
+        orgs = (await db.execute(text("""
                     select distinct organization_id
                     from audit_log
                     where created_at >= now() - interval '1 day'
-                """)
-            )
-        ).scalars().all()
+                """))).scalars().all()
 
         for org_id in orgs:
             try:
@@ -191,6 +194,7 @@ async def _consolidation_tick() -> int:
 async def _retention_tick() -> int:
     """Run data retention enforcement for all organizations."""
     from app.retention import retention_tick
+
     return await retention_tick()
 
 
@@ -203,9 +207,7 @@ async def _tick() -> int:
     # user-facing handler.
     async with SessionLocal() as db:
         await db.execute(text("SET LOCAL row_security = off"))
-        rows = (
-            await db.execute(
-                text("""
+        rows = (await db.execute(text("""
                     select id, organization_id, schedule_cron, next_run_at
                     from jobs
                     where schedule_cron is not null
@@ -214,9 +216,7 @@ async def _tick() -> int:
                       and status not in ('running', 'cancelled')
                     order by next_run_at asc
                     limit 100
-                """)
-            )
-        ).mappings().all()
+                """))).mappings().all()
 
         enqueued = 0
         for row in rows:
@@ -224,8 +224,7 @@ async def _tick() -> int:
             org_id = UUID(str(row["organization_id"]))
             cron_expr = row["schedule_cron"]
             try:
-                nxt = _next_fire(cron_expr,
-                                 row["next_run_at"] or datetime.now(timezone.utc))
+                nxt = _next_fire(cron_expr, row["next_run_at"] or datetime.now(UTC))
             except Exception:
                 log.exception("bad cron expression on job %s: %r", job_id, cron_expr)
                 continue
@@ -249,18 +248,16 @@ def _next_fire(cron_expr: str, after: datetime) -> datetime:
     """Compute the next fire time after `after`. Prefer croniter if present."""
     try:
         from croniter import croniter
+
         return croniter(cron_expr, after).get_next(datetime)
     except ImportError:
         # Minimal fallback: support a handful of common shorthands so the
         # absence of croniter doesn't break dev. Production should install
         # croniter via the optional extras.
         if cron_expr in ("@hourly", "0 * * * *"):
-            return (after.replace(minute=0, second=0, microsecond=0)
-                    + timedelta(hours=1))
+            return after.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
         if cron_expr in ("@daily", "0 0 * * *"):
-            return (after.replace(hour=0, minute=0, second=0, microsecond=0)
-                    + timedelta(days=1))
+            return after.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
         # Default: bump by 1 hour and let the user install croniter.
-        log.warning("no croniter installed; bumping cron job by 1h (was %r)",
-                    cron_expr)
+        log.warning("no croniter installed; bumping cron job by 1h (was %r)", cron_expr)
         return after + timedelta(hours=1)

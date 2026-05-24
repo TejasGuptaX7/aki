@@ -16,6 +16,7 @@ RBAC:
   - list sources → brain:retrieve (all authenticated)
   - export  → brain:export  (owner/admin)
 """
+
 from __future__ import annotations
 
 import json
@@ -24,7 +25,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select, text
@@ -37,10 +38,9 @@ from app.brain.embeddings import embed
 from app.brain.retrieval import retrieve as retrieve_hits
 from app.config import get_settings
 from app.db import session_for_org
-from app.middleware import get_principal, get_session
+from app.middleware import get_session
 from app.models import BrainChunk, BrainSource
 from app.rbac import Permission, require_permission
-
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/brain", tags=["brain"])
@@ -83,9 +83,7 @@ async def ingest(
         ).scalar_one_or_none()
         if existing is not None:
             count = (
-                await db.execute(
-                    select(BrainChunk.id).where(BrainChunk.source_id == existing)
-                )
+                await db.execute(select(BrainChunk.id).where(BrainChunk.source_id == existing))
             ).all()
             return IngestResponse(source_id=existing, chunks=len(count))
 
@@ -113,7 +111,7 @@ async def ingest(
     )
     if chunks:
         embeddings = await embed([c.content for c in chunks])
-        for chunk, vec in zip(chunks, embeddings):
+        for chunk, vec in zip(chunks, embeddings, strict=False):
             db.add(
                 BrainChunk(
                     id=uuid4(),
@@ -230,9 +228,7 @@ async def list_sources(
     principal: Principal = Depends(require_permission(Permission.BRAIN_RETRIEVE)),
     db: AsyncSession = Depends(get_session),
 ) -> list[SourceOut]:
-    q = select(BrainSource).where(
-        BrainSource.organization_id == principal.organization_id
-    )
+    q = select(BrainSource).where(BrainSource.organization_id == principal.organization_id)
     if scope:
         q = q.where(BrainSource.scope == scope)
     q = q.order_by(BrainSource.created_at.desc()).limit(limit)
@@ -301,8 +297,11 @@ async def export_jsonl(
         try:
             async with session_for_org(org_id) as db:
                 await append_audit(
-                    db, org_id, actor=principal.user_id,
-                    action="brain.export", target=None,
+                    db,
+                    org_id,
+                    actor=principal.user_id,
+                    action="brain.export",
+                    target=None,
                     payload={"kinds": sorted(requested), "rows": rows_yielded},
                 )
                 await db.commit()
@@ -313,9 +312,7 @@ async def export_jsonl(
         gen(),
         media_type="application/x-ndjson",
         headers={
-            "Content-Disposition": (
-                f'attachment; filename="brain-{org_id}.jsonl"'
-            ),
+            "Content-Disposition": (f'attachment; filename="brain-{org_id}.jsonl"'),
         },
     )
 

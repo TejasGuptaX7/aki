@@ -4,14 +4,14 @@ Batches up to 100 inputs per request. No retries beyond httpx defaults — the
 caller decides what to do on failure (skip + retry next sync, surface to
 the user, etc.).
 """
+
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Sequence
 
 import httpx
 
 from app.config import get_settings
-
 
 OPENAI_EMBEDDINGS_URL = "https://api.openai.com/v1/embeddings"
 BATCH_SIZE = 100

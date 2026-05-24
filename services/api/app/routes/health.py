@@ -3,6 +3,7 @@
 Kubernetes / container orchestrators use these to determine whether the pod
 should receive traffic (readiness) and whether it should be restarted (liveness).
 """
+
 from __future__ import annotations
 
 import logging
@@ -36,6 +37,7 @@ async def ready() -> dict:
     # Postgres check
     try:
         from app.db import SessionLocal
+
         async with SessionLocal() as session:
             await session.execute(text("SELECT 1"))
         checks["postgres"] = True
@@ -46,6 +48,7 @@ async def ready() -> dict:
     # Redis check
     try:
         import redis.asyncio as redis
+
         settings = get_settings()
         r = redis.from_url(settings.redis_url)
         await r.ping()
@@ -59,6 +62,7 @@ async def ready() -> dict:
     status_code = 200 if all_ok else 503
 
     from fastapi.responses import JSONResponse
+
     return JSONResponse(
         content={"ready": all_ok, "checks": checks},
         status_code=status_code,

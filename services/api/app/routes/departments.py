@@ -6,6 +6,7 @@ RBAC summary:
   - POST   /v1/departments/{id}/members → department admin+ only
   - DELETE /v1/departments/{id}         → owner only
 """
+
 from __future__ import annotations
 
 import re
@@ -24,10 +25,8 @@ from app.models import Department, Membership, User
 from app.rbac import (
     Permission,
     assert_department_access,
-    principal_role_at_least,
     require_permission,
 )
-
 
 router = APIRouter(prefix="/v1/departments", tags=["departments"])
 
@@ -48,8 +47,9 @@ class CreateDepartmentBody(BaseModel):
     slug: str = Field(..., min_length=1, max_length=64)
     hermes_model_name: str | None = Field(default=None, max_length=128)
     hermes_idle_minutes: int = Field(default=15, ge=1, le=24 * 60)
-    slack_channel: str | None = Field(default=None, max_length=128,
-                                       description="e.g. '#sales-bots'")
+    slack_channel: str | None = Field(
+        default=None, max_length=128, description="e.g. '#sales-bots'"
+    )
 
 
 class AddMemberBody(BaseModel):
@@ -77,7 +77,9 @@ async def list_departments(
     rows = (await db.execute(q)).scalars().all()
     return [
         DepartmentOut(
-            id=r.id, name=r.name, slug=r.slug,
+            id=r.id,
+            name=r.name,
+            slug=r.slug,
             hermes_model_name=r.hermes_model_name,
             hermes_idle_minutes=r.hermes_idle_minutes,
             created_at=r.created_at,
@@ -102,15 +104,13 @@ async def create_department(
         slug=body.slug,
         hermes_model_name=body.hermes_model_name,
         hermes_idle_minutes=body.hermes_idle_minutes,
-        notification_config=(
-            {"slack_channel": body.slack_channel} if body.slack_channel else {}
-        ),
+        notification_config=({"slack_channel": body.slack_channel} if body.slack_channel else {}),
     )
     db.add(row)
     try:
         await db.flush()
-    except Exception:
-        raise HTTPException(409, "department slug already exists in this org")
+    except Exception as e:
+        raise HTTPException(409, "department slug already exists in this org") from e
 
     await append_audit(
         db,
@@ -122,7 +122,9 @@ async def create_department(
     )
     await db.commit()
     return DepartmentOut(
-        id=row.id, name=row.name, slug=row.slug,
+        id=row.id,
+        name=row.name,
+        slug=row.slug,
         hermes_model_name=row.hermes_model_name,
         hermes_idle_minutes=row.hermes_idle_minutes,
         created_at=row.created_at,
@@ -153,9 +155,7 @@ async def add_member(
 
     # Resolve the user being added; must belong to the same org.
     user = (
-        await db.execute(
-            select(User).where(User.clerk_user_id == body.clerk_user_id)
-        )
+        await db.execute(select(User).where(User.clerk_user_id == body.clerk_user_id))
     ).scalar_one_or_none()
     if user is None or user.organization_id != principal.organization_id:
         raise HTTPException(404, "user not found in this organization")

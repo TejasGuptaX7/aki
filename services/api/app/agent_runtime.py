@@ -13,9 +13,11 @@ This module is intentionally Docker-only for now. When we deploy on Railway,
 Modal, or Fly.io Machines, write a parallel runtime class and a small factory
 in get_runtime().
 """
+
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import secrets
@@ -23,17 +25,15 @@ import socket
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
-
-from typing import TYPE_CHECKING
 
 import redis.asyncio as redis
 import yaml
+from opentelemetry import trace as otel_trace
 
 from app.config import get_settings
 from app.telemetry import get_tracer, trace_container_lifecycle
-from opentelemetry import trace as otel_trace
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -81,7 +81,7 @@ class HermesProcess:
         }
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "HermesProcess":
+    def from_dict(cls, d: dict[str, Any]) -> HermesProcess:
         return cls(
             org_id=UUID(d["org_id"]),
             department_id=UUID(d["department_id"]),
@@ -174,16 +174,16 @@ async def _delete_registry(r: redis.Redis, org_id: UUID, dept_id: UUID) -> None:
     await r.delete(_redis_key(org_id, dept_id))
 
 
-async def _materialize_config(
-    db: "AsyncSession", org_id: UUID, dept_id: UUID
-) -> None:
+async def _materialize_config(db: AsyncSession, org_id: UUID, dept_id: UUID) -> None:
     """Write the per-dept config.yaml under $HERMES_DATA_DIR/<org>/<dept>/."""
     from app.connectors.materialize import materialize_mcp_servers
+
     settings = get_settings()
     mcp_servers_list = await materialize_mcp_servers(db, org_id, dept_id)
 
-    mcp_servers = {entry["name"]: {k: v for k, v in entry.items() if k != "name"}
-                   for entry in mcp_servers_list}
+    mcp_servers = {
+        entry["name"]: {k: v for k, v in entry.items() if k != "name"} for entry in mcp_servers_list
+    }
 
     config = {
         "model": {
@@ -201,9 +201,7 @@ async def _materialize_config(
 _tracer = get_tracer("aki.agent_runtime")
 
 
-async def ensure_running(
-    db: "AsyncSession", org_id: UUID, dept_id: UUID
-) -> HermesProcess:
+async def ensure_running(db: AsyncSession, org_id: UUID, dept_id: UUID) -> HermesProcess:
     """Idempotent: return a running per-(org,dept) Hermes process, cold-starting if needed.
 
     Uses a distributed Redis lock to prevent multiple workers from cold-starting
@@ -245,8 +243,12 @@ async def ensure_running(
                     _LOCAL_CACHE[key] = proc
                     span.set_attribute("cache.lock_wait_hit", True)
                     return proc
-            span.set_status(otel_trace.Status(otel_trace.StatusCode.ERROR, "cold-start lock timeout"))
-            raise RuntimeError(f"timeout waiting for another worker to cold-start hermes for dept {dept_id}")
+            span.set_status(
+                otel_trace.Status(otel_trace.StatusCode.ERROR, "cold-start lock timeout")
+            )
+            raise RuntimeError(
+                f"timeout waiting for another worker to cold-start hermes for dept {dept_id}"
+            )
 
         try:
             # Double-check after acquiring lock (another worker may have finished)
@@ -286,6 +288,7 @@ async def _container_is_running_async(container_id: str) -> bool:
 def _container_is_running(container_id: str) -> bool:
     import docker
     from docker.errors import NotFound
+
     client = docker.from_env()
     try:
         c = client.containers.get(container_id)
@@ -296,6 +299,7 @@ def _container_is_running(container_id: str) -> bool:
 
 async def _boot_container(org_id: UUID, dept_id: UUID) -> HermesProcess:
     import docker
+
     settings = get_settings()
     client = docker.from_env()
     port = _pick_free_port()
@@ -372,6 +376,7 @@ async def shutdown(key: ProcKey) -> None:
 
     import docker
     from docker.errors import NotFound
+
     client = docker.from_env()
 
     def _stop() -> None:
@@ -461,16 +466,15 @@ async def reap_orphans() -> int:
                 pass
 
     import docker
+
     client = docker.from_env()
 
     def _list_and_kill() -> int:
         n = 0
         for c in client.containers.list(all=True, filters={"name": "aki-hermes-"}):
             if c.name not in registered_names:
-                try:
+                with contextlib.suppress(Exception):
                     c.stop(timeout=5)
-                except Exception:
-                    pass
                 try:
                     c.remove(force=True)
                     n += 1

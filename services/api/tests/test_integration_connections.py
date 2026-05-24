@@ -3,16 +3,16 @@
 Verifies _default_department_id returns the principal's first department
 or falls back to querying the org's first department.
 """
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
-from fastapi import HTTPException
-
 from app.auth import Principal
 from app.routes.connections import _default_department_id, _default_department_id_for_org
+from fastapi import HTTPException
 
 pytestmark = pytest.mark.asyncio
 

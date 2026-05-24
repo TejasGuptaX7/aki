@@ -3,6 +3,7 @@
 Since retrieve needs a real DB with pgvector, we mock the DB session and
 verify the SQL query construction and function signature.
 """
+
 from __future__ import annotations
 
 import inspect
@@ -10,7 +11,6 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
-
 from app.brain import retrieval
 from app.brain.retrieval import BrainHit, retrieve
 
@@ -118,9 +118,7 @@ async def test_retrieve_acl_filter_and_rerank(monkeypatch):
     mock_db.execute = fake_execute
 
     monkeypatch.setattr(retrieval, "embed", AsyncMock(return_value=[[0.1, 0.2, 0.3]]))
-    monkeypatch.setattr(
-        retrieval, "rerank", lambda q, passages, top_k: [(0, 0.99)]
-    )
+    monkeypatch.setattr(retrieval, "rerank", lambda q, passages, top_k: [(0, 0.99)])
     monkeypatch.setattr(retrieval, "is_allowed", AsyncMock(return_value=True))
 
     result = await retrieve(

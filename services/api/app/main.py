@@ -13,7 +13,7 @@ from slowapi.middleware import SlowAPIMiddleware
 
 from app.agent_runtime import hibernation_loop, reap_orphans, shutdown_all
 from app.config import get_settings
-from app.limits import limiter, configure_limiters
+from app.limits import configure_limiters, limiter
 from app.logging_middleware import AccessLogMiddleware
 from app.security import SecurityHeadersMiddleware
 from app.telemetry import init_telemetry
@@ -24,6 +24,7 @@ def _configure_logging() -> None:
     settings = get_settings()
     try:
         import structlog
+
         processors = [
             structlog.contextvars.merge_contextvars,
             structlog.processors.add_log_level,
@@ -56,11 +57,25 @@ def _configure_logging() -> None:
 
 
 _configure_logging()
-from app.routes import (
-    admin, audit, billing, brain, chat, connections, departments, devices,
-    gdpr, health, jobs, me, metrics, webhooks,
+# Imports must follow _configure_logging() so route modules pick up the
+# structlog handlers when they bind loggers at import time.
+from app.routes import (  # noqa: E402
+    admin,
+    audit,
+    billing,
+    brain,
+    chat,
+    connections,
+    departments,
+    devices,
+    gdpr,
+    health,
+    jobs,
+    me,
+    metrics,
+    webhooks,
 )
-from app.scheduler import scheduler_loop
+from app.scheduler import scheduler_loop  # noqa: E402
 
 settings = get_settings()
 log = logging.getLogger("hermes")

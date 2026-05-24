@@ -5,6 +5,7 @@ that carries cached role information (highest role, per-department role map,
 and ``is_org_admin``) so downstream RBAC checks are O(1) with no extra DB
 round-trips.
 """
+
 from collections.abc import AsyncIterator
 
 from fastapi import Depends, Request

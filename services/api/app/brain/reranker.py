@@ -15,6 +15,7 @@ Recommended model for production:
 For enterprise deployments with GPU, consider:
   cross-encoder/ms-marco-electra-base    — best quality, slower
 """
+
 from __future__ import annotations
 
 import logging
@@ -34,6 +35,7 @@ def _get_model() -> Any | None:
         return _model
     try:
         from sentence_transformers import CrossEncoder
+
         _model = CrossEncoder(_model_name)
         log.info("loaded cross-encoder model: %s", _model_name)
         return _model

@@ -10,11 +10,11 @@ Provides org-level management for owners and admins:
 
 All endpoints require admin:full or owner role.
 """
+
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timedelta, timezone
-from typing import Literal
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -23,8 +23,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import Principal
-from app.config import get_settings
-from app.middleware import get_principal, get_session
+from app.middleware import get_session
 from app.models import AuditLog, Department, Membership, Organization, User
 from app.rbac import Permission, require_permission
 
@@ -33,6 +32,7 @@ router = APIRouter(prefix="/v1/admin", tags=["admin"])
 
 
 # ── Org settings ───────────────────────────────────────────────────────────
+
 
 class OrgSettingsOut(BaseModel):
     id: UUID
@@ -60,9 +60,7 @@ async def get_org_settings(
     db: AsyncSession = Depends(get_session),
 ) -> OrgSettingsOut:
     row = (
-        await db.execute(
-            select(Organization).where(Organization.id == principal.organization_id)
-        )
+        await db.execute(select(Organization).where(Organization.id == principal.organization_id))
     ).scalar_one_or_none()
     if row is None:
         raise HTTPException(404, "organization not found")
@@ -88,9 +86,7 @@ async def patch_org_settings(
     db: AsyncSession = Depends(get_session),
 ) -> OrgSettingsOut:
     row = (
-        await db.execute(
-            select(Organization).where(Organization.id == principal.organization_id)
-        )
+        await db.execute(select(Organization).where(Organization.id == principal.organization_id))
     ).scalar_one_or_none()
     if row is None:
         raise HTTPException(404, "organization not found")
@@ -131,9 +127,7 @@ async def set_spend_cap(
 ) -> OrgSettingsOut:
     """Set hard and/or soft spending caps for the organization."""
     row = (
-        await db.execute(
-            select(Organization).where(Organization.id == principal.organization_id)
-        )
+        await db.execute(select(Organization).where(Organization.id == principal.organization_id))
     ).scalar_one_or_none()
     if row is None:
         raise HTTPException(404, "organization not found")
@@ -151,6 +145,7 @@ async def set_spend_cap(
 
 # ── User management ────────────────────────────────────────────────────────
 
+
 class UserOut(BaseModel):
     id: UUID
     clerk_user_id: str
@@ -165,21 +160,32 @@ async def list_org_users(
     db: AsyncSession = Depends(get_session),
 ) -> list[UserOut]:
     rows = (
-        await db.execute(
-            select(User)
-            .where(User.organization_id == principal.organization_id)
-            .order_by(User.created_at.desc())
+        (
+            await db.execute(
+                select(User)
+                .where(User.organization_id == principal.organization_id)
+                .order_by(User.created_at.desc())
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     # Build a map of user_id -> highest role across departments.
     memberships = (
-        await db.execute(
-            select(Membership)
-            .where(Membership.department_id.in_(
-                select(Department.id).where(Department.organization_id == principal.organization_id)
-            ))
+        (
+            await db.execute(
+                select(Membership).where(
+                    Membership.department_id.in_(
+                        select(Department.id).where(
+                            Department.organization_id == principal.organization_id
+                        )
+                    )
+                )
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     user_roles: dict[UUID, str] = {}
     role_rank = {"owner": 4, "admin": 3, "member": 2, "viewer": 1}
@@ -203,6 +209,7 @@ async def list_org_users(
 
 # ── Usage dashboard ────────────────────────────────────────────────────────
 
+
 class UsageDashboard(BaseModel):
     total_cost_30d: float
     total_chats_30d: int
@@ -217,13 +224,14 @@ async def usage_dashboard(
     principal: Principal = Depends(require_permission(Permission.BILLING_READ)),
     db: AsyncSession = Depends(get_session),
 ) -> UsageDashboard:
-    window_start = datetime.now(timezone.utc) - timedelta(days=30)
+    window_start = datetime.now(UTC) - timedelta(days=30)
     org_id = principal.organization_id
 
     # Aggregate from audit_log (source of truth)
     agg = (
-        await db.execute(
-            text("""
+        (
+            await db.execute(
+                text("""
                 select
                   coalesce(sum((payload->>'cost_usd')::numeric), 0) as cost,
                   sum(case when action = 'chat.complete' then 1 else 0 end) as chats,
@@ -233,13 +241,17 @@ async def usage_dashboard(
                 where organization_id = :org
                   and created_at >= :start
             """),
-            {"org": str(org_id), "start": window_start},
+                {"org": str(org_id), "start": window_start},
+            )
         )
-    ).mappings().one()
+        .mappings()
+        .one()
+    )
 
     daily = (
-        await db.execute(
-            text("""
+        (
+            await db.execute(
+                text("""
                 select
                   date_trunc('day', created_at)::date as day,
                   coalesce(sum((payload->>'cost_usd')::numeric), 0) as cost,
@@ -251,14 +263,18 @@ async def usage_dashboard(
                 group by 1
                 order by 1 desc
             """),
-            {"org": str(org_id), "start": window_start},
+                {"org": str(org_id), "start": window_start},
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
 
     # Top departments by cost (from audit_log payload)
     top_depts = (
-        await db.execute(
-            text("""
+        (
+            await db.execute(
+                text("""
                 select
                   coalesce(payload->>'department_id', 'unknown') as dept_id,
                   count(*) as events,
@@ -270,9 +286,12 @@ async def usage_dashboard(
                 order by cost desc
                 limit 5
             """),
-            {"org": str(org_id), "start": window_start},
+                {"org": str(org_id), "start": window_start},
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
 
     return UsageDashboard(
         total_cost_30d=float(agg["cost"] or 0),
@@ -285,6 +304,7 @@ async def usage_dashboard(
 
 
 # ── Audit summary ──────────────────────────────────────────────────────────
+
 
 class AuditSummary(BaseModel):
     total_events: int
@@ -299,15 +319,11 @@ async def audit_summary(
     db: AsyncSession = Depends(get_session),
 ) -> AuditSummary:
     org_id = principal.organization_id
-    today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     week_start = today - timedelta(days=today.weekday())
 
     total = (
-        await db.execute(
-            select(func.count(AuditLog.id)).where(
-                AuditLog.organization_id == org_id
-            )
-        )
+        await db.execute(select(func.count(AuditLog.id)).where(AuditLog.organization_id == org_id))
     ).scalar_one()
 
     today_count = (
@@ -329,8 +345,9 @@ async def audit_summary(
     ).scalar_one()
 
     top_actions = (
-        await db.execute(
-            text("""
+        (
+            await db.execute(
+                text("""
                 select action, count(*) as cnt
                 from audit_log
                 where organization_id = :org
@@ -339,9 +356,12 @@ async def audit_summary(
                 order by cnt desc
                 limit 10
             """),
-            {"org": str(org_id), "start": week_start},
+                {"org": str(org_id), "start": week_start},
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
 
     return AuditSummary(
         total_events=int(total),

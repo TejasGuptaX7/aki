@@ -11,11 +11,12 @@ Logs include:
   - status_code, response_time_ms
   - user_agent, client_ip
 """
+
 from __future__ import annotations
 
 import logging
 import time
-from typing import Callable
+from collections.abc import Callable
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -32,10 +33,6 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         start = time.perf_counter()
-        method = request.method
-        path = request.url.path
-        query = str(request.query_params) if request.query_params else ""
-
         try:
             response = await call_next(request)
         except Exception as exc:
