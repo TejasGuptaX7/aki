@@ -12,12 +12,13 @@ in `brain/retrieval.py` uses pgvector + tsvector; this evaluator is the
 The embedder is a callable injected at runtime so tests can stub it.
 Default is `app.brain.embeddings.embed`.
 """
+
 from __future__ import annotations
 
 import math
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Awaitable, Callable, Iterable
 
 Embedder = Callable[[list[str]], Awaitable[list[list[float]]]]
 
@@ -47,11 +48,12 @@ class EvalResult:
 
 def _load_yaml(path: Path) -> dict:
     """Minimal YAML loader. We only support what `recall.yml` actually uses:
-       top-level mapping with `sources:` (list of {id,title,body}) and
-       `queries:` (list of {q, expect: [ids]}). No tags, no anchors.
-       Avoid a PyYAML hard dependency for the eval script."""
+    top-level mapping with `sources:` (list of {id,title,body}) and
+    `queries:` (list of {q, expect: [ids]}). No tags, no anchors.
+    Avoid a PyYAML hard dependency for the eval script."""
     try:
         import yaml
+
         return yaml.safe_load(path.read_text()) or {}
     except ImportError:
         return _miniyaml(path.read_text())
@@ -62,7 +64,7 @@ def _miniyaml(text: str) -> dict:
     list items with `- key: value` and folded `|` block scalars."""
     out: dict = {"sources": [], "queries": []}
     current_section: str | None = None
-    current_item: dict | None = None
+    current_item: dict = {}
     in_block: tuple[str, list[str]] | None = None
     base_indent: int = 0
 
@@ -79,7 +81,7 @@ def _miniyaml(text: str) -> dict:
         if in_block:
             key, lines = in_block
             if indent > base_indent:
-                lines.append(line[base_indent + 2:])
+                lines.append(line[base_indent + 2 :])
                 continue
             current_item[key] = "\n".join(lines).strip("\n")
             in_block = None
@@ -120,7 +122,7 @@ def _miniyaml(text: str) -> dict:
 def _cosine(a: list[float], b: list[float]) -> float:
     if not a or not b:
         return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
     na = math.sqrt(sum(x * x for x in a))
     nb = math.sqrt(sum(x * x for x in b))
     if na == 0 or nb == 0:
@@ -144,6 +146,7 @@ async def run_eval(
 
     if embedder is None:
         from app.brain.embeddings import embed
+
         embedder = embed
 
     source_texts = [f"{s.get('title','')}\n\n{s.get('body','')}" for s in sources]
@@ -154,12 +157,9 @@ async def run_eval(
 
     hits = 0
     misses = 0
-    for q, qv in zip(queries, query_vecs):
+    for q, qv in zip(queries, query_vecs, strict=False):
         scored = sorted(
-            (
-                (_cosine(qv, sv), sources[i]["id"])
-                for i, sv in enumerate(source_vecs)
-            ),
+            ((_cosine(qv, sv), sources[i]["id"]) for i, sv in enumerate(source_vecs)),
             reverse=True,
         )
         top_ids = {sid for _, sid in scored[:k]}
@@ -180,13 +180,16 @@ def main():
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "spec", nargs="?",
+        "spec",
+        nargs="?",
         default="tests/brain/recall.yml",
         help="path to the recall.yml spec",
     )
     parser.add_argument("--k", type=int, default=5)
     parser.add_argument(
-        "--threshold", type=float, default=0.85,
+        "--threshold",
+        type=float,
+        default=0.85,
         help="exit nonzero if recall@k is below this",
     )
     args = parser.parse_args()

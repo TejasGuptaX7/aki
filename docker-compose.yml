@@ -1,0 +1,116 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Local development stack for the Aki platform
+#
+#   api     → FastAPI control plane (Gunicorn + Uvicorn workers)
+#   worker  → arq background-job worker (shares api image)
+#   postgres→ Postgres 16 with pgvector extension
+#   redis   → Redis 7 (job queue, per-org locks, rate-limit backend)
+#
+# Hermes (the per-org agent runtime) is NOT here — it is spawned dynamically
+# by the control plane via Docker / Railway / Modal.
+# ──────────────────────────────────────────────────────────────────────────────
+
+services:
+  # ── FastAPI control plane ──
+  api:
+    build:
+      context: ./services/api
+      dockerfile: Dockerfile
+    container_name: aki-api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # Override localhost defaults to use Docker service hostnames
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://postgres:postgres@postgres:5432/aki}
+      DATABASE_URL_SYNC: ${DATABASE_URL_SYNC:-postgresql://postgres:postgres@postgres:5432/aki}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      HERMES_GATEWAY_URL: ${HERMES_GATEWAY_URL:-http://host.docker.internal:8080}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - aki
+    restart: unless-stopped
+    # In local dev you can mount the source for hot-reload, but the production
+    # image bakes the code. Uncomment for rapid iteration:
+    # volumes:
+    #   - ./services/api:/app:ro
+
+  # ── Background worker (arq) ──
+  # Uses the same image as `api` but overrides the command to run the arq
+  # dispatcher instead of the HTTP server.
+  worker:
+    build:
+      context: ./services/api
+      dockerfile: Dockerfile
+    container_name: aki-worker
+    command: ["python", "-m", "arq", "app.worker.Settings"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://postgres:postgres@postgres:5432/aki}
+      DATABASE_URL_SYNC: ${DATABASE_URL_SYNC:-postgresql://postgres:postgres@postgres:5432/aki}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      HERMES_GATEWAY_URL: ${HERMES_GATEWAY_URL:-http://host.docker.internal:8080}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - aki
+    restart: unless-stopped
+
+  # ── Postgres 16 + pgvector ──
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: aki-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: aki
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - aki
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d aki"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # ── Redis 7 ──
+  redis:
+    image: redis:7-alpine
+    container_name: aki-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - aki
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 3s
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  aki:
+    driver: bridge

@@ -178,16 +178,17 @@ When we do build it:
 
 ## 10. Phasing — shipped vs. open
 
-| Phase | Status      | Scope                                                                                   |
-| ----- | ----------- | --------------------------------------------------------------------------------------- |
-| 2a    | ✅ shipped  | Clerk + Composio + Neon tenancy plumbing                                                |
-| 2b    | ✅ shipped  | Per-org Hermes container, OpenAI inference, SSE proxy                                   |
-| 2c    | ✅ shipped  | SSE-tap audit, GET /audit, cost tracking, Clerk metadata round-trip, orphan reaper      |
-| 2c+   | open        | Slack OAuth via Composio + DM delivery on long-task completion                          |
-| 3     | open        | Retrieval pipeline if and when Hermes' built-in attachment fails customers              |
-| 4     | open        | RBAC granularity (memberships, per-resource ACL), admin console, per-user `USER.md`     |
-| 5     | open        | Billing (Stripe), usage metering off the cost_usd field already in audit                |
-| Web   | partial     | Landing (Glyph II direction) shipped; chat, /connect, audit viewer not started          |
+| Phase   | Status      | Scope                                                                                     |
+| ------- | ----------- | ----------------------------------------------------------------------------------------- |
+| 2a      | ✅ shipped  | Clerk + Composio + Neon tenancy plumbing                                                  |
+| 2b      | ✅ shipped  | Per-org Hermes container, OpenAI inference, SSE proxy                                     |
+| 2c      | ✅ shipped  | SSE-tap audit, GET /audit, cost tracking, Clerk metadata round-trip, orphan reaper        |
+| 2c+     | open        | Slack OAuth via Composio + DM delivery on long-task completion                            |
+| 3       | ✅ shipped  | Brain retrieval (pgvector + BM25 + cross-encoder rerank), hydration in chat, per-org ACL  |
+| 4       | ✅ shipped  | RBAC (memberships, 18 permissions), admin console (/admin/*), GDPR routes, data retention |
+| 5       | ✅ shipped  | Billing (Stripe Meter API), cost caps (hard/soft), usage dashboard                        |
+| Web     | ✅ shipped  | Landing (Glyph II), chat, /connect, /jobs, /devices, /audit, /admin/*                     |
+| Desktop | ✅ shipped  | Tauri v2 tray app, pairing, Ed25519 device JWTs, local Hermes, SSE chat, journal/sync     |
 
 ## 11. Operational details
 

@@ -7,6 +7,7 @@ custom-MCP and browser-use entries.
 
 The control plane never executes tool calls itself — Hermes does, via MCP.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -33,14 +34,12 @@ async def materialize_mcp_servers(
     servers: list[dict[str, Any]] = []
 
     rows = (
-        await db.execute(
-            select(Connection).where(Connection.department_id == dept_id)
-        )
-    ).scalars().all()
-
-    has_composio = any(
-        (r.config or {}).get("source", "composio") == "composio" for r in rows
+        (await db.execute(select(Connection).where(Connection.department_id == dept_id)))
+        .scalars()
+        .all()
     )
+
+    has_composio = any((r.config or {}).get("source", "composio") == "composio" for r in rows)
     if has_composio and settings.composio_api_key:
         session = await get_composio_client().create_tool_router_session(org_id)
         servers.append(

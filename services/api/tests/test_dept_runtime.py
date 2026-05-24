@@ -1,5 +1,6 @@
 """Verify the per-(org, dept) keying surface of agent_runtime without booting
 real containers. We only check the pure helpers that produce names and dirs."""
+
 from pathlib import Path
 from uuid import uuid4
 
@@ -33,6 +34,7 @@ def test_container_name_within_docker_limit():
 def test_dept_dir_isolation(tmp_path, monkeypatch):
     """Two departments under one org get distinct workspace directories."""
     from app.config import get_settings
+
     settings = get_settings()
     monkeypatch.setattr(settings, "hermes_data_dir", str(tmp_path))
 

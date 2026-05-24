@@ -1,10 +1,11 @@
 """The worker's SSE parser is pure stdlib. Exercise the standard shapes
 without spinning up arq, redis, or Hermes."""
+
 from app.worker import _parse_sse_blocks
 
 
 def test_yields_complete_blocks_and_keeps_partial_tail():
-    s = "event: hermes.tool.progress\ndata: {\"tool\":\"gmail\"}\n\nevent: msg\ndata: pa"
+    s = 'event: hermes.tool.progress\ndata: {"tool":"gmail"}\n\nevent: msg\ndata: pa'
     blocks, tail = _parse_sse_blocks(s)
     assert len(blocks) == 1
     assert blocks[0][0] == "hermes.tool.progress"
@@ -13,7 +14,7 @@ def test_yields_complete_blocks_and_keeps_partial_tail():
 
 
 def test_handles_no_event_header():
-    s = "data: {\"choices\":[]}\n\n"
+    s = 'data: {"choices":[]}\n\n'
     blocks, tail = _parse_sse_blocks(s)
     assert len(blocks) == 1
     assert blocks[0][0] is None

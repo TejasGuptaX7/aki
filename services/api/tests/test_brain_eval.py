@@ -1,14 +1,14 @@
 """Brain eval runner with a deterministic stub embedder. Verifies:
-  - the spec parses (without PyYAML)
-  - the recall scorer counts hits correctly
-  - recall@k goes UP when the embedder is closer to ground truth
+- the spec parses (without PyYAML)
+- the recall scorer counts hits correctly
+- recall@k goes UP when the embedder is closer to ground truth
 """
+
 import asyncio
 import hashlib
 from pathlib import Path
 
 from app.brain.eval import run_eval
-
 
 SPEC = Path(__file__).resolve().parent / "brain" / "recall.yml"
 
@@ -40,12 +40,10 @@ async def _oracle_embedder(texts):
     perfect retrieval.
     """
     from app.brain.eval import _load_yaml
+
     spec = _load_yaml(SPEC)
     # Must match how run_eval builds source_texts: "<title>\n\n<body>".
-    src_by_id = {
-        s["id"]: f"{s.get('title','')}\n\n{s.get('body','')}"
-        for s in spec["sources"]
-    }
+    src_by_id = {s["id"]: f"{s.get('title','')}\n\n{s.get('body','')}" for s in spec["sources"]}
     q_to_target = {}
     for q in spec["queries"]:
         expect = q.get("expect") or []
@@ -64,6 +62,7 @@ async def _oracle_embedder(texts):
 def test_spec_loads_without_pyyaml(monkeypatch):
     """Confirm the mini-YAML fallback works (force PyYAML import to fail)."""
     import builtins
+
     real_import = builtins.__import__
 
     def fake_import(name, *args, **kwargs):
@@ -73,6 +72,7 @@ def test_spec_loads_without_pyyaml(monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
     from app.brain.eval import _load_yaml
+
     spec = _load_yaml(SPEC)
     assert spec["sources"], "no sources parsed"
     assert spec["queries"], "no queries parsed"

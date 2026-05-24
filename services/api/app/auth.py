@@ -8,9 +8,17 @@ Three auth paths:
   3. Aki device JWT (Ed25519, issued by this API). Used by paired desktop
      clients. Issuer is our own API base URL; same Principal shape, no
      callers change.
+
+RBAC caching
+------------
+During verification we look up the user's memberships once and cache:
+  - ``department_ids``        → flat list for RLS GUCs / quick checks
+  - ``department_roles``      → mapping of department_id → role
+  - ``role``                  → highest role across all departments
+  - ``is_org_admin``          → True when role is owner or admin
 """
+
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from uuid import UUID
 
 import httpx
@@ -43,11 +51,57 @@ async def _lookup_org_by_clerk_user_id(clerk_user_id: str) -> UUID | None:
         return result.scalar_one_or_none()
 
 
+async def _lookup_memberships(
+    clerk_user_id: str,
+) -> tuple[list[UUID], dict[UUID, str], str]:
+    """Resolve a clerk_user_id to (department_ids, department_roles, highest_role).
+
+    Returns an empty list/dict and "viewer" if the user is not found.
+    RLS-bypassed.
+    """
+    from app.db import SessionLocal
+    from app.models import Membership, User
+
+    async with SessionLocal() as session:
+        await session.execute(text("SET LOCAL row_security = off"))
+        user_row = (
+            await session.execute(select(User.id).where(User.clerk_user_id == clerk_user_id))
+        ).scalar_one_or_none()
+        if user_row is None:
+            return [], {}, "viewer"
+
+        rows = (
+            await session.execute(
+                select(Membership.department_id, Membership.role).where(
+                    Membership.user_id == user_row
+                )
+            )
+        ).all()
+
+        dept_ids: list[UUID] = []
+        dept_roles: dict[UUID, str] = {}
+        rank = 0
+        highest = "viewer"
+        from app.rbac import ROLE_RANK
+
+        for dept_id, role in rows:
+            dept_ids.append(dept_id)
+            dept_roles[dept_id] = role
+            r = ROLE_RANK.get(role, 0)
+            if r > rank:
+                rank = r
+                highest = role
+        return dept_ids, dept_roles, highest
+
+
 async def _lookup_user_and_orgs_for_device(
     device_id: UUID,
-) -> tuple[str, UUID, list[UUID]] | None:
-    """For a device JWT, look up the (user_id, org_id, department_ids) tuple.
-    RLS-bypassed for the same reason as the Clerk fallback above."""
+) -> tuple[str, UUID, list[UUID], dict[UUID, str], str] | None:
+    """For a device JWT, look up the (user_id, org_id, department_ids,
+    department_roles, highest_role) tuple.
+
+    RLS-bypassed for the same reason as the Clerk fallback above.
+    """
     from app.db import SessionLocal
     from app.models import AkiDevice, Membership, User
 
@@ -55,8 +109,12 @@ async def _lookup_user_and_orgs_for_device(
         await session.execute(text("SET LOCAL row_security = off"))
         row = (
             await session.execute(
-                select(AkiDevice.user_id, AkiDevice.organization_id,
-                       AkiDevice.revoked_at, User.clerk_user_id)
+                select(
+                    AkiDevice.user_id,
+                    AkiDevice.organization_id,
+                    AkiDevice.revoked_at,
+                    User.clerk_user_id,
+                )
                 .join(User, User.id == AkiDevice.user_id)
                 .where(AkiDevice.id == device_id)
             )
@@ -68,51 +126,45 @@ async def _lookup_user_and_orgs_for_device(
             return None
         # Touch last_seen_at on every authenticated call. Best-effort.
         await session.execute(
-            text(
-                "update aki_devices set last_seen_at = now() where id = :id"
-            ),
+            text("update aki_devices set last_seen_at = now() where id = :id"),
             {"id": str(device_id)},
         )
         await session.commit()
-        dept_rows = (
-            await session.execute(
-                select(Membership.department_id).where(Membership.user_id == user_id)
-            )
-        ).scalars().all()
-        return clerk_user_id, org_id, list(dept_rows)
 
-
-async def _lookup_department_ids(user_id_or_clerk: str) -> list[UUID]:
-    """Resolve a clerk_user_id (or app user_id) to the list of department_ids
-    they're a member of. Returns [] if the user isn't found or has no
-    memberships yet. RLS-bypassed."""
-    from app.db import SessionLocal
-    from app.models import Membership, User
-
-    async with SessionLocal() as session:
-        await session.execute(text("SET LOCAL row_security = off"))
-        # If we got a clerk user id, resolve to internal user_id first.
-        user_row = (
+        membership_rows = (
             await session.execute(
-                select(User.id).where(User.clerk_user_id == user_id_or_clerk)
+                select(Membership.department_id, Membership.role).where(
+                    Membership.user_id == user_id
+                )
             )
-        ).scalar_one_or_none()
-        if user_row is None:
-            return []
-        rows = (
-            await session.execute(
-                select(Membership.department_id).where(Membership.user_id == user_row)
-            )
-        ).scalars().all()
-        return list(rows)
+        ).all()
+
+        dept_ids: list[UUID] = []
+        dept_roles: dict[UUID, str] = {}
+        rank = 0
+        highest = "viewer"
+        from app.rbac import ROLE_RANK
+
+        for dept_id, role in membership_rows:
+            dept_ids.append(dept_id)
+            dept_roles[dept_id] = role
+            r = ROLE_RANK.get(role, 0)
+            if r > rank:
+                rank = r
+                highest = role
+
+        return clerk_user_id, org_id, dept_ids, dept_roles, highest
 
 
 @dataclass(frozen=True)
 class Principal:
-    user_id: str                       # Clerk user id (e.g. "user_2abc…")
-    organization_id: UUID              # resolved from users table
+    user_id: str  # Clerk user id (e.g. "user_2abc…")
+    organization_id: UUID  # resolved from users table
     department_ids: list[UUID] = field(default_factory=list)
-    device_id: UUID | None = None      # set when authed via Aki device JWT
+    device_id: UUID | None = None  # set when authed via Aki device JWT
+    role: str = "viewer"  # highest role across all departments
+    is_org_admin: bool = False  # True when role is owner or admin
+    department_roles: dict[UUID, str] = field(default_factory=dict, hash=False, compare=False)
 
 
 async def _get_jwks() -> dict:
@@ -150,22 +202,25 @@ async def _verify_device_jwt(token: str) -> Principal:
             options={"require": ["iss", "sub", "exp", "aud"]},
         )
     except jwt.PyJWTError as e:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, f"invalid device token: {e}")
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, f"invalid device token: {e}") from e
 
     try:
         device_id = UUID(claims["sub"])
-    except (KeyError, ValueError):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "device token: bad sub")
+    except (KeyError, ValueError) as e:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "device token: bad sub") from e
 
     looked_up = await _lookup_user_and_orgs_for_device(device_id)
     if looked_up is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "device revoked or unknown")
-    clerk_user_id, org_id, dept_ids = looked_up
+    clerk_user_id, org_id, dept_ids, dept_roles, highest_role = looked_up
     return Principal(
         user_id=clerk_user_id,
         organization_id=org_id,
         department_ids=dept_ids,
         device_id=device_id,
+        role=highest_role,
+        is_org_admin=highest_role in ("owner", "admin"),
+        department_roles=dept_roles,
     )
 
 
@@ -175,11 +230,14 @@ async def verify(request: Request) -> Principal:
         dev_org = request.headers.get("X-Dev-Org-Id")
         if dev_org:
             dev_user = request.headers.get("X-Dev-User-Id", "user_dev")
-            dept_ids = await _lookup_department_ids(dev_user)
+            dept_ids, dept_roles, highest_role = await _lookup_memberships(dev_user)
             return Principal(
                 user_id=dev_user,
                 organization_id=UUID(dev_org),
                 department_ids=dept_ids,
+                role=highest_role,
+                is_org_admin=highest_role in ("owner", "admin"),
+                department_roles=dept_roles,
             )
 
     auth = request.headers.get("Authorization", "")
@@ -197,7 +255,12 @@ async def verify(request: Request) -> Principal:
     try:
         header = jwt.get_unverified_header(token)
         key = next(k for k in jwks.get("keys", []) if k["kid"] == header["kid"])
+        # JWK conversion returns a union; for "use":"sig" keys this is always a
+        # public key — narrow for mypy.
         public_key = jwt.algorithms.RSAAlgorithm.from_jwk(key)
+        from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
+
+        assert isinstance(public_key, RSAPublicKey)
         claims = jwt.decode(
             token,
             public_key,
@@ -206,7 +269,7 @@ async def verify(request: Request) -> Principal:
             options={"require": ["iss", "sub", "exp"]},
         )
     except (StopIteration, jwt.PyJWTError) as e:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, f"invalid token: {e}")
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, f"invalid token: {e}") from e
 
     org_id = claims.get("org_id")
     if not org_id:
@@ -215,9 +278,12 @@ async def verify(request: Request) -> Principal:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "no org for this user")
 
     clerk_sub = claims["sub"]
-    dept_ids = await _lookup_department_ids(clerk_sub)
+    dept_ids, dept_roles, highest_role = await _lookup_memberships(clerk_sub)
     return Principal(
         user_id=clerk_sub,
         organization_id=UUID(str(org_id)),
         department_ids=dept_ids,
+        role=highest_role,
+        is_org_admin=highest_role in ("owner", "admin"),
+        department_roles=dept_roles,
     )

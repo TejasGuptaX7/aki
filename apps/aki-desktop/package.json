@@ -12,11 +12,12 @@
   "dependencies": {
     "@tauri-apps/api": "^2.4.0",
     "@tauri-apps/plugin-global-shortcut": "^2.0.0",
-    "@tauri-apps/plugin-keyring": "^2.0.0",
     "@tauri-apps/plugin-positioner": "^2.0.0",
     "@tauri-apps/plugin-store": "^2.0.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.4.0",

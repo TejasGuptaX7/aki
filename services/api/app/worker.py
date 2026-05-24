@@ -25,18 +25,20 @@ re-enqueues via `dispatch_job`.
 This module exists as a separate process: `python -m arq app.worker.Settings`.
 The API process imports `enqueue_job` as a side-channel into the queue.
 """
+
 from __future__ import annotations
 
 import json
 import logging
-import time
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 import httpx
 
 from app.brain.chunker import chunk_text
+from app.brain.hydration import hydrate_messages
 from app.config import get_settings
+
 # Heavy deps (sqlalchemy, arq, internal models) are imported lazily inside
 # the functions that use them so the SSE parser stays unit-testable
 # without the full prod dep set.
@@ -65,6 +67,7 @@ Operating principles:
 async def enqueue_job(job_id: UUID, org_id: UUID) -> None:
     """Side-channel from the API process: drop a job onto the arq queue."""
     from arq import create_pool
+
     settings = get_settings()
     redis = await create_pool(_redis_settings_from(settings.redis_url))
     try:
@@ -75,8 +78,10 @@ async def enqueue_job(job_id: UUID, org_id: UUID) -> None:
 
 def _redis_settings_from(url: str):
     """Parse REDIS_URL into arq's RedisSettings shape."""
-    from arq.connections import RedisSettings
     from urllib.parse import urlparse
+
+    from arq.connections import RedisSettings
+
     p = urlparse(url)
     return RedisSettings(
         host=p.hostname or "localhost",
@@ -88,21 +93,21 @@ def _redis_settings_from(url: str):
 
 # ── arq task ──────────────────────────────────────────────────────────────
 
+
 async def dispatch_job(ctx: dict, job_id_str: str, org_id_str: str) -> dict:
     """The arq task that actually runs a queued job."""
     from sqlalchemy import select, text
+
     from app.audit import append_audit
     from app.db import session_for_org
-    from app.models import Job, JobEvent
+    from app.models import Job
     from app.pricing import estimate_cost_usd
 
     job_id = UUID(job_id_str)
     org_id = UUID(org_id_str)
 
     async with session_for_org(org_id) as db:
-        job = (
-            await db.execute(select(Job).where(Job.id == job_id))
-        ).scalar_one_or_none()
+        job = (await db.execute(select(Job).where(Job.id == job_id))).scalar_one_or_none()
         if job is None:
             log.warning("dispatch_job: job %s not found (deleted?)", job_id)
             return {"status": "missing"}
@@ -112,12 +117,17 @@ async def dispatch_job(ctx: dict, job_id_str: str, org_id_str: str) -> dict:
 
         # Optimistic claim: set running. If somebody else already claimed,
         # this UPDATE updates 0 rows and we exit.
-        result = await db.execute(
-            text("""
-                update jobs set status = 'running', updated_at = now()
-                where id = :id and status in ('queued', 'failed', 'waiting_human')
-            """),
-            {"id": str(job_id)},
+        from sqlalchemy import CursorResult
+
+        result = cast(
+            CursorResult,
+            await db.execute(
+                text("""
+                    update jobs set status = 'running', updated_at = now()
+                    where id = :id and status in ('queued', 'failed', 'waiting_human')
+                """),
+                {"id": str(job_id)},
+            ),
         )
         if result.rowcount == 0:
             await db.commit()
@@ -130,8 +140,7 @@ async def dispatch_job(ctx: dict, job_id_str: str, org_id_str: str) -> dict:
     # Run the heavy lifting outside the session so we don't hold a DB
     # connection across the long Hermes turn.
     try:
-        summary, usage, events = await _run_brief(job_id, org_id, job.department_id,
-                                                  job.brief)
+        summary, usage, events = await _run_brief(job_id, org_id, job.department_id, job.brief)
     except Exception as e:
         log.exception("job %s failed", job_id)
         async with session_for_org(org_id) as db:
@@ -143,8 +152,12 @@ async def dispatch_job(ctx: dict, job_id_str: str, org_id_str: str) -> dict:
             )
             await _log_event(db, job_id, "error", {"message": str(e)[:512]})
             await append_audit(
-                db, org_id, actor="worker:arq", action="job.failed",
-                target=str(job_id), payload={"error": str(e)[:512]},
+                db,
+                org_id,
+                actor="worker:arq",
+                action="job.failed",
+                target=str(job_id),
+                payload={"error": str(e)[:512]},
             )
             await db.commit()
         return {"status": "failed", "error": str(e)[:256]}
@@ -159,7 +172,13 @@ async def dispatch_job(ctx: dict, job_id_str: str, org_id_str: str) -> dict:
     async with session_for_org(org_id) as db:
         # Write the job summary into Brain so future retrieval can cite it.
         brain_id = await _write_summary_to_brain(
-            db, org_id, job.department_id, job_id, job.actor, job.brief, summary,
+            db,
+            org_id,
+            job.department_id,
+            job_id,
+            job.actor,
+            job.brief,
+            summary,
         )
 
         await db.execute(
@@ -176,14 +195,27 @@ async def dispatch_job(ctx: dict, job_id_str: str, org_id_str: str) -> dict:
                 "bid": str(brain_id) if brain_id else None,
             },
         )
-        await _log_event(db, job_id, "status_change", {
-            "to": "done", "cost_usd": cost_usd, "tool_calls": len(events),
-        })
+        await _log_event(
+            db,
+            job_id,
+            "status_change",
+            {
+                "to": "done",
+                "cost_usd": cost_usd,
+                "tool_calls": len(events),
+            },
+        )
         await append_audit(
-            db, org_id, actor="worker:arq", action="job.complete",
+            db,
+            org_id,
+            actor="worker:arq",
+            action="job.complete",
             target=str(job_id),
-            payload={"cost_usd": cost_usd, "tool_calls": len(events),
-                     "brain_source_id": str(brain_id) if brain_id else None},
+            payload={
+                "cost_usd": cost_usd,
+                "tool_calls": len(events),
+                "brain_source_id": str(brain_id) if brain_id else None,
+            },
         )
         await db.commit()
 
@@ -199,7 +231,10 @@ async def dispatch_job(ctx: dict, job_id_str: str, org_id_str: str) -> dict:
 
 
 async def _deliver_to_slack(
-    org_id: UUID, dept_id: UUID, job_id: UUID, summary: str,
+    org_id: UUID,
+    dept_id: UUID,
+    job_id: UUID,
+    summary: str,
 ) -> None:
     """Post a follow-up turn telling Hermes to publish the summary in
     `notification_config.slack_channel`. No-op if the channel isn't set
@@ -210,7 +245,9 @@ async def _deliver_to_slack(
     into job_events ourselves — otherwise the Slack post would be invisible.
     """
     import json as _json
+
     from sqlalchemy import select
+
     from app.agent_runtime import ensure_running
     from app.audit import append_audit
     from app.db import session_for_org
@@ -252,33 +289,46 @@ async def _deliver_to_slack(
 
     tool_events: list[dict] = []
     tail = ""
-    async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=10.0)) as c:
-        async with c.stream(
-            "POST", f"{proc.base_url}/v1/chat/completions",
-            content=body, headers=headers,
-        ) as upstream:
-            async for raw in upstream.aiter_bytes():
+    async with (
+        httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=10.0)) as c,
+        c.stream(
+            "POST",
+            f"{proc.base_url}/v1/chat/completions",
+            content=body,
+            headers=headers,
+        ) as upstream,
+    ):
+        async for raw in upstream.aiter_bytes():
+            try:
+                tail += raw.decode("utf-8", errors="replace")
+            except Exception:
+                continue
+            blocks, tail = _parse_sse_blocks(tail)
+            for event, data in blocks:
+                if data == "[DONE]":
+                    continue
                 try:
-                    tail += raw.decode("utf-8", errors="replace")
+                    obj = _json.loads(data)
                 except Exception:
                     continue
-                blocks, tail = _parse_sse_blocks(tail)
-                for event, data in blocks:
-                    if data == "[DONE]":
-                        continue
-                    try:
-                        obj = _json.loads(data)
-                    except Exception:
-                        continue
-                    if event and event.startswith("hermes.tool"):
-                        tool_events.append(obj)
+                if event and event.startswith("hermes.tool"):
+                    tool_events.append(obj)
 
     async with session_for_org(org_id) as db:
-        await _log_event(db, job_id, "delivery", {
-            "channel": channel, "tool_calls": len(tool_events),
-        })
+        await _log_event(
+            db,
+            job_id,
+            "delivery",
+            {
+                "channel": channel,
+                "tool_calls": len(tool_events),
+            },
+        )
         await append_audit(
-            db, org_id, actor="worker:arq", action="job.deliver",
+            db,
+            org_id,
+            actor="worker:arq",
+            action="job.deliver",
             target=str(job_id),
             payload={"channel": channel, "tool_calls": len(tool_events)},
         )
@@ -286,7 +336,10 @@ async def _deliver_to_slack(
 
 
 async def _run_brief(
-    job_id: UUID, org_id: UUID, dept_id: UUID, brief: str,
+    job_id: UUID,
+    org_id: UUID,
+    dept_id: UUID,
+    brief: str,
 ) -> tuple[str, dict[str, Any] | None, list[dict]]:
     """Cold-start the per-dept Hermes container and issue one chat turn.
 
@@ -296,18 +349,27 @@ async def _run_brief(
     """
     from app.agent_runtime import ensure_running
     from app.db import session_for_org
-    from app.models import JobEvent
 
     async with session_for_org(org_id) as db:
         proc = await ensure_running(db, org_id, dept_id)
 
+    # Hydrate the brief with relevant Brain context before execution
+    messages = [
+        {"role": "system", "content": WORKER_SYSTEM_PROMPT},
+        {"role": "user", "content": brief},
+    ]
+    try:
+        from app.db import session_for_org as _sfo_hydrate
+
+        async with _sfo_hydrate(org_id) as db:
+            messages = await hydrate_messages(db, org_id, dept_id, "worker:arq", messages, k=5)
+    except Exception:
+        log.exception("brain hydration failed for job %s; continuing without context", job_id)
+
     payload = {
         "model": get_settings().hermes_model_name,
         "stream": True,
-        "messages": [
-            {"role": "system", "content": WORKER_SYSTEM_PROMPT},
-            {"role": "user", "content": brief},
-        ],
+        "messages": messages,
     }
     body = json.dumps(payload).encode()
     headers = {
@@ -320,40 +382,45 @@ async def _run_brief(
     final_usage: dict | None = None
     tail = ""
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(900.0, connect=10.0)) as c:
-        async with c.stream(
-            "POST", f"{proc.base_url}/v1/chat/completions",
-            content=body, headers=headers,
-        ) as upstream:
-            async for raw in upstream.aiter_bytes():
+    async with (
+        httpx.AsyncClient(timeout=httpx.Timeout(900.0, connect=10.0)) as c,
+        c.stream(
+            "POST",
+            f"{proc.base_url}/v1/chat/completions",
+            content=body,
+            headers=headers,
+        ) as upstream,
+    ):
+        async for raw in upstream.aiter_bytes():
+            try:
+                tail += raw.decode("utf-8", errors="replace")
+            except Exception:
+                continue
+            blocks, tail = _parse_sse_blocks(tail)
+            for event, data in blocks:
+                if data == "[DONE]":
+                    continue
                 try:
-                    tail += raw.decode("utf-8", errors="replace")
+                    obj = json.loads(data)
                 except Exception:
                     continue
-                blocks, tail = _parse_sse_blocks(tail)
-                for event, data in blocks:
-                    if data == "[DONE]":
-                        continue
-                    try:
-                        obj = json.loads(data)
-                    except Exception:
-                        continue
-                    if event and event.startswith("hermes.tool"):
-                        tool_events.append(obj)
-                        from app.db import session_for_org as _sfo
-                        async with _sfo(org_id) as db:
-                            await _log_event(db, job_id, "tool_call", obj)
-                            await db.commit()
-                        continue
-                    if isinstance(obj, dict):
-                        # Extract assistant text from OpenAI-shape chunks.
-                        for choice in obj.get("choices") or []:
-                            delta = (choice.get("delta") or {})
-                            piece = delta.get("content") or ""
-                            if piece:
-                                chunks_text.append(piece)
-                        if "usage" in obj and obj["usage"]:
-                            final_usage = obj["usage"]
+                if event and event.startswith("hermes.tool"):
+                    tool_events.append(obj)
+                    from app.db import session_for_org as _sfo
+
+                    async with _sfo(org_id) as db:
+                        await _log_event(db, job_id, "tool_call", obj)
+                        await db.commit()
+                    continue
+                if isinstance(obj, dict):
+                    # Extract assistant text from OpenAI-shape chunks.
+                    for choice in obj.get("choices") or []:
+                        delta = choice.get("delta") or {}
+                        piece = delta.get("content") or ""
+                        if piece:
+                            chunks_text.append(piece)
+                    if "usage" in obj and obj["usage"]:
+                        final_usage = obj["usage"]
 
     return "".join(chunks_text).strip(), final_usage, tool_events
 
@@ -381,13 +448,19 @@ def _parse_sse_blocks(buf: str):
 
 async def _log_event(db, job_id: UUID, kind: str, payload: dict) -> None:
     from app.models import JobEvent
+
     db.add(JobEvent(job_id=job_id, kind=kind, payload=payload))
     await db.flush()
 
 
 async def _write_summary_to_brain(
-    db, org_id: UUID, dept_id: UUID, job_id: UUID, actor: str,
-    brief: str, summary: str,
+    db,
+    org_id: UUID,
+    dept_id: UUID,
+    job_id: UUID,
+    actor: str,
+    brief: str,
+    summary: str,
 ) -> UUID | None:
     """Index the job's brief + summary into Brain so future jobs can cite it."""
     from app.audit import append_audit
@@ -426,7 +499,7 @@ async def _write_summary_to_brain(
         except Exception:
             log.exception("embed failed for job %s; storing source w/o chunks", job_id)
             return source.id
-        for chunk, vec in zip(chunks, embeddings):
+        for chunk, vec in zip(chunks, embeddings, strict=False):
             db.add(
                 BrainChunk(
                     source_id=source.id,
@@ -439,11 +512,18 @@ async def _write_summary_to_brain(
             )
 
     await append_audit(
-        db, org_id, actor="worker:arq", action="brain.ingest",
+        db,
+        org_id,
+        actor="worker:arq",
+        action="brain.ingest",
         target=str(source.id),
-        payload={"kind": "job_summary", "origin": "hermes",
-                 "uri": f"job://{job_id}", "chunks": len(chunks),
-                 "title": title},
+        payload={
+            "kind": "job_summary",
+            "origin": "hermes",
+            "uri": f"job://{job_id}",
+            "chunks": len(chunks),
+            "title": title,
+        },
     )
     return source.id
 
@@ -453,9 +533,11 @@ async def _write_summary_to_brain(
 
 def _build_settings():
     """Build the arq WorkerSettings on demand. Used by `python -m arq`."""
+
     class Settings:
         functions = [dispatch_job]
         redis_settings = _redis_settings_from(get_settings().redis_url)
+
     return Settings
 
 

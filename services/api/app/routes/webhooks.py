@@ -7,10 +7,11 @@ entity. Idempotent on clerk_user_id so replays are safe.
 
 Verified via svix (Clerk uses Svix for webhook signing).
 """
+
 from __future__ import annotations
 
 import logging
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request, status
 from sqlalchemy import select
@@ -18,10 +19,9 @@ from svix.webhooks import Webhook, WebhookVerificationError
 
 from app.clerk_client import update_user_public_metadata
 from app.config import get_settings
-from app.db import session_for_org, SessionLocal
+from app.db import SessionLocal
 from app.limits import limiter
 from app.models import Organization, OrgMemory, User
-
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
@@ -42,11 +42,9 @@ async def clerk_webhook(request: Request) -> None:
     if len(body) > settings.webhook_max_body_bytes:
         raise HTTPException(413, "webhook body too large")
     try:
-        evt = Webhook(settings.clerk_webhook_secret).verify(
-            body, dict(request.headers)
-        )
+        evt = Webhook(settings.clerk_webhook_secret).verify(body, dict(request.headers))
     except WebhookVerificationError as e:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, f"bad signature: {e}")
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, f"bad signature: {e}") from e
 
     if evt.get("type") != "user.created":
         return
@@ -55,11 +53,7 @@ async def clerk_webhook(request: Request) -> None:
     clerk_user_id = data["id"]
     primary = data.get("primary_email_address_id")
     email = next(
-        (
-            e["email_address"]
-            for e in data.get("email_addresses", [])
-            if e["id"] == primary
-        ),
+        (e["email_address"] for e in data.get("email_addresses", []) if e["id"] == primary),
         None,
     ) or (data.get("email_addresses", [{}])[0].get("email_address"))
 
@@ -71,9 +65,7 @@ async def clerk_webhook(request: Request) -> None:
     # users (RLS-enabled, but we set the GUC mid-transaction).
     async with SessionLocal() as db:
         existing = (
-            await db.execute(
-                select(User).where(User.clerk_user_id == clerk_user_id)
-            )
+            await db.execute(select(User).where(User.clerk_user_id == clerk_user_id))
         ).scalar_one_or_none()
         if existing:
             return  # idempotent replay
@@ -85,6 +77,7 @@ async def clerk_webhook(request: Request) -> None:
         # Now set the org GUC so the next inserts pass RLS.
         # SET LOCAL doesn't accept bound params; set_config() does.
         from sqlalchemy import text
+
         await db.execute(
             text("SELECT set_config('app.org_id', :oid, true)"),
             {"oid": str(org.id)},
@@ -118,11 +111,11 @@ async def clerk_webhook(request: Request) -> None:
     # org_id claim and /me will 403 until we retry. Not fatal at signup.
     if settings.clerk_secret_key:
         try:
-            await update_user_public_metadata(
-                clerk_user_id, {"aki_org_id": str(org.id)}
-            )
+            await update_user_public_metadata(clerk_user_id, {"aki_org_id": str(org.id)})
         except Exception:
             log.exception(
                 "clerk metadata update failed for user=%s org=%s — JWT will "
-                "lack org_id claim until retry", clerk_user_id, org.id,
+                "lack org_id claim until retry",
+                clerk_user_id,
+                org.id,
             )

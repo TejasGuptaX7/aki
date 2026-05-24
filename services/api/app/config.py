@@ -15,7 +15,7 @@ class Settings(BaseSettings):
 
     app_env: Literal["dev", "staging", "prod"] = "dev"
     api_base_url: str = "http://localhost:8000"
-    web_base_url: str = "http://localhost:3000"   # for OAuth callback redirects
+    web_base_url: str = "http://localhost:3000"  # for OAuth callback redirects
 
     # Safety: the X-Dev-Org-Id auth bypass requires BOTH app_env=dev AND this
     # flag set to true. Two checks so a single env misconfiguration in prod
@@ -36,18 +36,14 @@ class Settings(BaseSettings):
     webhook_max_body_bytes: int = 1_048_576  # 1 MiB
 
     # Database — async URL for the app, sync URL for Alembic.
-    database_url: str = Field(
-        default="postgresql+asyncpg://postgres:postgres@localhost:5432/aki"
-    )
-    database_url_sync: str = Field(
-        default="postgresql://postgres:postgres@localhost:5432/aki"
-    )
+    database_url: str = Field(default="postgresql+asyncpg://postgres:postgres@localhost:5432/aki")
+    database_url_sync: str = Field(default="postgresql://postgres:postgres@localhost:5432/aki")
 
     # Clerk
     clerk_jwt_issuer: str | None = None
     clerk_jwks_url: str | None = None
     clerk_webhook_secret: str | None = None
-    clerk_secret_key: str | None = None       # for Backend API calls (metadata update)
+    clerk_secret_key: str | None = None  # for Backend API calls (metadata update)
 
     # Agent
     hermes_gateway_url: str = "http://localhost:8080"
@@ -57,7 +53,7 @@ class Settings(BaseSettings):
     hermes_data_dir: str = "~/.aki/hermes"
     hermes_idle_minutes: int = 15
     agent_runtime: Literal["local", "railway", "modal"] = "local"
-    hermes_model_provider: str = "custom"   # Hermes 0.13 'provider' name
+    hermes_model_provider: str = "custom"  # Hermes 0.13 'provider' name
     hermes_model_name: str = "gpt-5"
 
     # Redis (per-org lifecycle locks, NOTIFY fan-out cache)
@@ -82,8 +78,8 @@ class Settings(BaseSettings):
     browser_use_mcp_base_url: str = "https://api.browser-use.com"
 
     # Brain
-    brain_chunk_tokens: int = 800       # approx tokens per chunk
-    brain_chunk_overlap: int = 100      # chars carried into the next chunk
+    brain_chunk_tokens: int = 800  # approx tokens per chunk
+    brain_chunk_overlap: int = 100  # chars carried into the next chunk
 
     # Aki desktop device JWTs (Ed25519). PEM-encoded private key; pyjwt
     # uses it for signing AND verification (it derives the pubkey from a
@@ -98,6 +94,12 @@ class Settings(BaseSettings):
     stripe_meter_event_name: str | None = None
     stripe_customer_id: str | None = None
 
+    # Resend (transactional email)
+    resend_api_key: str | None = None
+    resend_from_address: str | None = None
+
+    # OpenTelemetry observability
+    otlp_endpoint: str | None = None  # e.g. "http://localhost:4318/v1/traces"
 
     @field_validator("cors_origins", mode="before")
     @classmethod

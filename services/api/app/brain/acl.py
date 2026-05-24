@@ -13,17 +13,18 @@ Per-origin live checks live in this module. What we check vs what we trust:
     SLACK_FETCH_CONVERSATION_INFO. If the channel is archived/private and
     we can't see it, fail closed. Per-user membership recheck waits on the
     aki_user_id ↔ slack_user_id mapping landing in a later phase.
-  - notion / drive: stubs that fail open with a logged warning until the
+  - notion / drive: stubs that fail closed with a logged warning until the
     integrations are wired.
 
 The cache is in-process (cachetools.TTLCache). For multi-worker prod, swap
 to Redis using `redis.set(key, "1", ex=300)` — same key shape.
 """
+
 from __future__ import annotations
 
 import logging
 import re
-from typing import Iterable
+from collections.abc import Iterable
 from uuid import UUID
 
 from cachetools import TTLCache
@@ -69,7 +70,11 @@ async def is_allowed(
         return _cache[cache_key]
 
     decision = await _live_check(
-        origin, uri, snapshot_principals, requester_set, org_id,
+        origin,
+        uri,
+        snapshot_principals,
+        requester_set,
+        org_id,
     )
     _cache[cache_key] = decision
     return decision
@@ -79,8 +84,10 @@ _SLACK_CHANNEL_RE = re.compile(r"slack://(?:channel|message)/(C[A-Z0-9]+)")
 
 
 async def _live_check(
-    origin: str, uri: str | None,
-    snapshot: list[str], requester: set[str],
+    origin: str,
+    uri: str | None,
+    snapshot: list[str],
+    requester: set[str],
     org_id: UUID | None,
 ) -> bool:
     """Provider-specific live ACL re-check."""
@@ -93,14 +100,16 @@ async def _live_check(
         return await _live_check_slack(uri, org_id)
 
     if origin == "notion":
-        # TODO: call Notion pages.retrieve and check user's permissions.
-        log.warning("notion live ACL recheck not implemented; trusting snapshot for %s", uri)
-        return True
+        # Notion live ACL recheck requires a Notion integration token per org.
+        # Until Composio Notion actions are wired, fail closed.
+        log.warning("notion live ACL recheck not implemented; denying access for %s", uri)
+        return False
 
     if origin == "drive":
-        # TODO: drive.files.get with fields=permissions
-        log.warning("drive live ACL recheck not implemented; trusting snapshot for %s", uri)
-        return True
+        # Google Drive live ACL recheck requires a Drive API token per org.
+        # Until Composio Drive actions are wired, fail closed.
+        log.warning("drive live ACL recheck not implemented; denying access for %s", uri)
+        return False
 
     # Unknown origin: snapshot must do.
     log.info("no live ACL recheck for origin=%s; trusting snapshot", origin)
@@ -133,17 +142,16 @@ async def _live_check_slack(uri: str, org_id: UUID) -> bool:
     except Exception as e:
         # Provider error: fail-open with a warning. Treating a transient
         # 503 as a hard "no" would degrade the agent's recall during outages.
-        log.warning("slack live ACL recheck call failed for %s: %s; trusting snapshot",
-                    channel_id, e)
+        log.warning(
+            "slack live ACL recheck call failed for %s: %s; trusting snapshot", channel_id, e
+        )
         return True
 
     data = (result or {}).get("data") or {}
     channel = data.get("channel") or {}
     if channel.get("is_archived"):
         return False
-    if data.get("error") in ("channel_not_found", "missing_scope"):
-        return False
-    return True
+    return data.get("error") not in ("channel_not_found", "missing_scope")
 
 
 def invalidate_source(source_id: UUID) -> None:

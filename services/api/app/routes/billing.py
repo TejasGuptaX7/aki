@@ -14,11 +14,16 @@ before wiring Stripe.
 
 Full automation (nightly Stripe push, per-org subscription tier lookup,
 hard usage caps) lands when we're ready to take real payments.
+
+RBAC:
+  - usage  → billing:read  (admin/owner)
+  - rollup → billing:manage (owner only)
 """
+
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
@@ -28,8 +33,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import Principal
 from app.config import get_settings
-from app.middleware import get_principal, get_session
-
+from app.middleware import get_session
+from app.rbac import Permission, require_permission
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/billing", tags=["billing"])
@@ -46,15 +51,16 @@ class UsageDay(BaseModel):
 @router.get("/usage", response_model=list[UsageDay])
 async def usage(
     days: int = 30,
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_permission(Permission.BILLING_READ)),
     db: AsyncSession = Depends(get_session),
 ) -> list[UsageDay]:
     if days < 1 or days > 365:
         raise HTTPException(400, "days out of range (1..365)")
 
     rows = (
-        await db.execute(
-            text("""
+        (
+            await db.execute(
+                text("""
                 select
                   date_trunc('day', created_at)::date as day,
                   coalesce(sum((payload->>'cost_usd')::numeric), 0) as cost,
@@ -67,13 +73,17 @@ async def usage(
                 group by 1
                 order by 1 desc
             """),
-            {"days": days},
+                {"days": days},
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
 
     return [
         UsageDay(
-            day=row["day"], cost_usd=float(row["cost"] or 0),
+            day=row["day"],
+            cost_usd=float(row["cost"] or 0),
             tool_calls=int(row["tools"] or 0),
             chats=int(row["chats"] or 0),
             jobs=int(row["jobs"] or 0),
@@ -92,29 +102,31 @@ class RollupResponse(BaseModel):
 
 @router.post("/rollup", response_model=RollupResponse)
 async def rollup(
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_permission(Permission.BILLING_MANAGE)),
     db: AsyncSession = Depends(get_session),
 ) -> RollupResponse:
     """Sum cost for the previous full day (UTC) and (if Stripe is wired)
     push as a meter event. Designed to be hit by a nightly cron."""
     settings = get_settings()
 
-    today = datetime.now(timezone.utc).replace(
-        hour=0, minute=0, second=0, microsecond=0)
+    today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     window_start = today - timedelta(days=1)
     window_end = today
 
     total = (
-        await db.execute(
-            text("""
+        (
+            await db.execute(
+                text("""
                 select coalesce(sum((payload->>'cost_usd')::numeric), 0)
                 from audit_log
                 where organization_id = current_setting('app.org_id', true)::uuid
                   and created_at >= :start and created_at < :end
             """),
-            {"start": window_start, "end": window_end},
-        )
-    ).scalar_one() or 0
+                {"start": window_start, "end": window_end},
+            )
+        ).scalar_one()
+        or 0
+    )
     cost = float(total)
 
     pushed = False
@@ -130,11 +142,11 @@ async def rollup(
                 data={
                     "event_name": settings.stripe_meter_event_name,
                     "timestamp": str(int(window_end.timestamp())),
-                    f"payload[stripe_customer_id]": (
+                    "payload[stripe_customer_id]": (
                         settings.stripe_customer_id or str(principal.organization_id)
                     ),
-                    f"payload[value]": f"{cost:.4f}",
-                    f"identifier": f"{principal.organization_id}:{window_end.date().isoformat()}",
+                    "payload[value]": f"{cost:.4f}",
+                    "identifier": f"{principal.organization_id}:{window_end.date().isoformat()}",
                 },
             )
             if r.status_code >= 400:
@@ -144,6 +156,9 @@ async def rollup(
                 event_id = r.json().get("id")
 
     return RollupResponse(
-        window_start=window_start, window_end=window_end,
-        cost_usd=cost, stripe_pushed=pushed, stripe_event_id=event_id,
+        window_start=window_start,
+        window_end=window_end,
+        cost_usd=cost,
+        stripe_pushed=pushed,
+        stripe_event_id=event_id,
     )

@@ -15,14 +15,10 @@ async def me(
     db: AsyncSession = Depends(get_session),
 ) -> dict:
     user = (
-        await db.execute(
-            select(User).where(User.clerk_user_id == principal.user_id)
-        )
+        await db.execute(select(User).where(User.clerk_user_id == principal.user_id))
     ).scalar_one_or_none()
     org = (
-        await db.execute(
-            select(Organization).where(Organization.id == principal.organization_id)
-        )
+        await db.execute(select(Organization).where(Organization.id == principal.organization_id))
     ).scalar_one_or_none()
     return {
         "user": {"id": str(user.id), "email": user.email} if user else None,

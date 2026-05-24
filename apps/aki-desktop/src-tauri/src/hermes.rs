@@ -13,9 +13,9 @@ use serde::Serialize;
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::Stdio;
-use tokio::process::{Child, Command};
+use tokio::process::Command;
 use tokio::sync::Mutex;
-use tracing::info;
+use tracing::{info, warn};
 
 static HANDLE: Mutex<Option<HandleInner>> = Mutex::const_new(None);
 
@@ -28,7 +28,7 @@ pub struct HermesHandle {
 
 struct HandleInner {
     public: HermesHandle,
-    _child: Child,
+    pid: u32,
 }
 
 fn hermes_home() -> PathBuf {
@@ -78,7 +78,7 @@ pub async fn start_or_attach() -> Result<HermesHandle> {
         cmd.env("OPENAI_API_KEY", key);
     }
 
-    let child = cmd.spawn().map_err(|e| {
+    let mut child = cmd.spawn().map_err(|e| {
         anyhow!(
             "couldn't spawn `hermes`: {e}. Install hermes-agent: \
              `pip install hermes-agent==0.13.0`"
@@ -95,10 +95,26 @@ pub async fn start_or_attach() -> Result<HermesHandle> {
     // Wait for /v1/models to return 200; bail after 30s.
     wait_for_ready(&public).await?;
 
+    // Spawn a reaper task so we detect crashes and clear the stale handle.
+    tauri::async_runtime::spawn(async move {
+        let exit = child.wait().await;
+        let mut guard = HANDLE.lock().await;
+        if let Some(inner) = guard.as_ref() {
+            if inner.pid == pid {
+                *guard = None;
+            }
+        }
+        match exit {
+            Ok(status) if status.success() => info!("local hermes exited cleanly (pid={pid})"),
+            Ok(status) => warn!("local hermes exited with code={:?} (pid={pid})", status.code()),
+            Err(e) => warn!("local hermes wait error (pid={pid}): {e}"),
+        }
+    });
+
     info!("local hermes started on pid={pid} port={port}");
     *guard = Some(HandleInner {
         public: public.clone(),
-        _child: child,
+        pid,
     });
     Ok(public)
 }

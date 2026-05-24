@@ -18,11 +18,11 @@ Revision ID: 0003
 Revises: 0002
 Create Date: 2026-05-23
 """
-from alembic import op
-import sqlalchemy as sa
-from sqlalchemy.dialects.postgresql import JSONB, UUID
-from pgvector.sqlalchemy import Vector
 
+import sqlalchemy as sa
+from alembic import op
+from pgvector.sqlalchemy import Vector
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 revision = "0003"
 down_revision = "0002"
@@ -34,18 +34,25 @@ def upgrade() -> None:
     # ── departments ─────────────────────────────────────────────────────────
     op.create_table(
         "departments",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True,
-                  server_default=sa.text("gen_random_uuid()")),
-        sa.Column("organization_id", UUID(as_uuid=True),
-                  sa.ForeignKey("organizations.id", ondelete="cascade"),
-                  nullable=False),
+        sa.Column(
+            "id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")
+        ),
+        sa.Column(
+            "organization_id",
+            UUID(as_uuid=True),
+            sa.ForeignKey("organizations.id", ondelete="cascade"),
+            nullable=False,
+        ),
         sa.Column("name", sa.String(255), nullable=False),
         sa.Column("slug", sa.String(64), nullable=False),
         sa.Column("hermes_model_name", sa.String(128)),
-        sa.Column("hermes_idle_minutes", sa.Integer, server_default="15",
-                  nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True),
-                  server_default=sa.text("now()"), nullable=False),
+        sa.Column("hermes_idle_minutes", sa.Integer, server_default="15", nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.UniqueConstraint("organization_id", "slug", name="uq_dept_org_slug"),
     )
     op.create_index("ix_departments_org", "departments", ["organization_id"])
@@ -54,14 +61,25 @@ def upgrade() -> None:
     # Composite PK on (user_id, department_id). Role: owner|member|viewer.
     op.create_table(
         "memberships",
-        sa.Column("user_id", UUID(as_uuid=True),
-                  sa.ForeignKey("users.id", ondelete="cascade"), nullable=False),
-        sa.Column("department_id", UUID(as_uuid=True),
-                  sa.ForeignKey("departments.id", ondelete="cascade"),
-                  nullable=False),
+        sa.Column(
+            "user_id",
+            UUID(as_uuid=True),
+            sa.ForeignKey("users.id", ondelete="cascade"),
+            nullable=False,
+        ),
+        sa.Column(
+            "department_id",
+            UUID(as_uuid=True),
+            sa.ForeignKey("departments.id", ondelete="cascade"),
+            nullable=False,
+        ),
         sa.Column("role", sa.String(32), server_default="member", nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True),
-                  server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.PrimaryKeyConstraint("user_id", "department_id", name="pk_memberships"),
     )
     op.create_index("ix_memberships_dept", "memberships", ["department_id"])
@@ -94,8 +112,9 @@ def upgrade() -> None:
 
     op.add_column(
         "connections",
-        sa.Column("department_id", UUID(as_uuid=True),
-                  sa.ForeignKey("departments.id", ondelete="cascade")),
+        sa.Column(
+            "department_id", UUID(as_uuid=True), sa.ForeignKey("departments.id", ondelete="cascade")
+        ),
     )
     op.execute("""
         update connections c
@@ -110,8 +129,7 @@ def upgrade() -> None:
     op.alter_column("connections", "department_id", nullable=False)
     # The old index (org_id, provider) is superseded by the dept-scoped one.
     op.drop_index("ix_connections_org_provider", table_name="connections")
-    op.create_index("ix_connections_dept_provider", "connections",
-                    ["department_id", "provider"])
+    op.create_index("ix_connections_dept_provider", "connections", ["department_id", "provider"])
 
     # ── department-level RLS for departments table ──────────────────────────
     op.execute("alter table departments enable row level security")
@@ -124,14 +142,21 @@ def upgrade() -> None:
     # ── jobs ────────────────────────────────────────────────────────────────
     op.create_table(
         "jobs",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True,
-                  server_default=sa.text("gen_random_uuid()")),
-        sa.Column("organization_id", UUID(as_uuid=True),
-                  sa.ForeignKey("organizations.id", ondelete="cascade"),
-                  nullable=False),
-        sa.Column("department_id", UUID(as_uuid=True),
-                  sa.ForeignKey("departments.id", ondelete="cascade"),
-                  nullable=False),
+        sa.Column(
+            "id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")
+        ),
+        sa.Column(
+            "organization_id",
+            UUID(as_uuid=True),
+            sa.ForeignKey("organizations.id", ondelete="cascade"),
+            nullable=False,
+        ),
+        sa.Column(
+            "department_id",
+            UUID(as_uuid=True),
+            sa.ForeignKey("departments.id", ondelete="cascade"),
+            nullable=False,
+        ),
         sa.Column("actor", sa.String(255), nullable=False),
         sa.Column("brief", sa.Text, nullable=False),
         sa.Column("status", sa.String(32), server_default="queued", nullable=False),
@@ -141,14 +166,21 @@ def upgrade() -> None:
         sa.Column("result_summary", sa.Text),
         sa.Column("cost_usd", sa.Numeric(10, 4), server_default="0", nullable=False),
         sa.Column("brain_source_id", UUID(as_uuid=True)),  # FK added after brain_sources
-        sa.Column("created_at", sa.DateTime(timezone=True),
-                  server_default=sa.text("now()"), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True),
-                  server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
     )
     op.create_index("ix_jobs_status_next", "jobs", ["status", "next_run_at"])
-    op.create_index("ix_jobs_dept_created", "jobs",
-                    ["department_id", sa.text("created_at desc")])
+    op.create_index("ix_jobs_dept_created", "jobs", ["department_id", sa.text("created_at desc")])
 
     op.execute("alter table jobs enable row level security")
     op.execute("""
@@ -161,10 +193,15 @@ def upgrade() -> None:
     op.create_table(
         "job_events",
         sa.Column("id", sa.BigInteger, primary_key=True, autoincrement=True),
-        sa.Column("job_id", UUID(as_uuid=True),
-                  sa.ForeignKey("jobs.id", ondelete="cascade"), nullable=False),
-        sa.Column("ts", sa.DateTime(timezone=True),
-                  server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "job_id",
+            UUID(as_uuid=True),
+            sa.ForeignKey("jobs.id", ondelete="cascade"),
+            nullable=False,
+        ),
+        sa.Column(
+            "ts", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False
+        ),
         sa.Column("kind", sa.String(32), nullable=False),
         sa.Column("payload", JSONB, server_default=sa.text("'{}'::jsonb")),
     )
@@ -205,30 +242,45 @@ def upgrade() -> None:
     # ── brain_sources ───────────────────────────────────────────────────────
     op.create_table(
         "brain_sources",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True,
-                  server_default=sa.text("gen_random_uuid()")),
-        sa.Column("organization_id", UUID(as_uuid=True),
-                  sa.ForeignKey("organizations.id", ondelete="cascade"),
-                  nullable=False),
+        sa.Column(
+            "id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")
+        ),
+        sa.Column(
+            "organization_id",
+            UUID(as_uuid=True),
+            sa.ForeignKey("organizations.id", ondelete="cascade"),
+            nullable=False,
+        ),
         sa.Column("scope", sa.String(16), nullable=False),  # org|department|user
         sa.Column("scope_id", UUID(as_uuid=True)),
         sa.Column("kind", sa.String(64), nullable=False),
         sa.Column("origin", sa.String(32), nullable=False),
         sa.Column("uri", sa.String(1024)),
         sa.Column("title", sa.String(512)),
-        sa.Column("acl_principals", JSONB,
-                  server_default=sa.text("'[]'::jsonb"), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True),
-                  server_default=sa.text("now()"), nullable=False),
+        sa.Column("acl_principals", JSONB, server_default=sa.text("'[]'::jsonb"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
     )
-    op.create_index("ix_brain_sources_org_created", "brain_sources",
-                    ["organization_id", sa.text("created_at desc")])
-    op.create_index("ix_brain_sources_scope", "brain_sources",
-                    ["organization_id", "scope", "scope_id"])
+    op.create_index(
+        "ix_brain_sources_org_created",
+        "brain_sources",
+        ["organization_id", sa.text("created_at desc")],
+    )
+    op.create_index(
+        "ix_brain_sources_scope", "brain_sources", ["organization_id", "scope", "scope_id"]
+    )
     # Idempotency on (origin, uri) when uri is provided.
-    op.create_index("ix_brain_sources_origin_uri", "brain_sources",
-                    ["origin", "uri"], unique=True,
-                    postgresql_where=sa.text("uri is not null"))
+    op.create_index(
+        "ix_brain_sources_origin_uri",
+        "brain_sources",
+        ["origin", "uri"],
+        unique=True,
+        postgresql_where=sa.text("uri is not null"),
+    )
 
     op.execute("alter table brain_sources enable row level security")
     op.execute("""
@@ -239,29 +291,44 @@ def upgrade() -> None:
 
     # Now add the deferred FK from jobs.brain_source_id → brain_sources.id.
     op.create_foreign_key(
-        "fk_jobs_brain_source", "jobs", "brain_sources",
-        ["brain_source_id"], ["id"], ondelete="set null",
+        "fk_jobs_brain_source",
+        "jobs",
+        "brain_sources",
+        ["brain_source_id"],
+        ["id"],
+        ondelete="set null",
     )
 
     # ── brain_chunks ────────────────────────────────────────────────────────
     op.create_table(
         "brain_chunks",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True,
-                  server_default=sa.text("gen_random_uuid()")),
-        sa.Column("source_id", UUID(as_uuid=True),
-                  sa.ForeignKey("brain_sources.id", ondelete="cascade"),
-                  nullable=False),
-        sa.Column("organization_id", UUID(as_uuid=True),
-                  sa.ForeignKey("organizations.id", ondelete="cascade"),
-                  nullable=False),
+        sa.Column(
+            "id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")
+        ),
+        sa.Column(
+            "source_id",
+            UUID(as_uuid=True),
+            sa.ForeignKey("brain_sources.id", ondelete="cascade"),
+            nullable=False,
+        ),
+        sa.Column(
+            "organization_id",
+            UUID(as_uuid=True),
+            sa.ForeignKey("organizations.id", ondelete="cascade"),
+            nullable=False,
+        ),
         sa.Column("chunk_index", sa.Integer, nullable=False),
         sa.Column("content", sa.Text, nullable=False),
         sa.Column("token_count", sa.Integer, nullable=False),
         # pgvector dim is fixed at table creation — text-embedding-3-small is 1536.
         # An upgrade to Voyage-3 (1024) needs a separate re-embed migration.
         sa.Column("embedding", Vector(1536)),
-        sa.Column("created_at", sa.DateTime(timezone=True),
-                  server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
     )
     # ts_vector is a generated column; can't be declared via Column() in a
     # portable way, so add it with raw SQL after table creation.
@@ -291,22 +358,30 @@ def upgrade() -> None:
     # ── brain_facts ─────────────────────────────────────────────────────────
     op.create_table(
         "brain_facts",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True,
-                  server_default=sa.text("gen_random_uuid()")),
-        sa.Column("organization_id", UUID(as_uuid=True),
-                  sa.ForeignKey("organizations.id", ondelete="cascade"),
-                  nullable=False),
+        sa.Column(
+            "id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")
+        ),
+        sa.Column(
+            "organization_id",
+            UUID(as_uuid=True),
+            sa.ForeignKey("organizations.id", ondelete="cascade"),
+            nullable=False,
+        ),
         sa.Column("scope", sa.String(16), nullable=False),
         sa.Column("scope_id", UUID(as_uuid=True)),
         sa.Column("key", sa.String(255), nullable=False),
         sa.Column("value", sa.Text, nullable=False),
-        sa.Column("confidence", sa.Numeric(4, 3), server_default="1.0",
-                  nullable=False),
-        sa.Column("source_id", UUID(as_uuid=True),
-                  sa.ForeignKey("brain_sources.id", ondelete="set null")),
+        sa.Column("confidence", sa.Numeric(4, 3), server_default="1.0", nullable=False),
+        sa.Column(
+            "source_id", UUID(as_uuid=True), sa.ForeignKey("brain_sources.id", ondelete="set null")
+        ),
         sa.Column("superseded_by", UUID(as_uuid=True)),
-        sa.Column("created_at", sa.DateTime(timezone=True),
-                  server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
     )
     # Active (un-superseded) facts are unique per (org, scope, scope_id, key).
     op.execute("""
@@ -325,20 +400,32 @@ def upgrade() -> None:
     # ── aki_devices ─────────────────────────────────────────────────────────
     op.create_table(
         "aki_devices",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True,
-                  server_default=sa.text("gen_random_uuid()")),
-        sa.Column("user_id", UUID(as_uuid=True),
-                  sa.ForeignKey("users.id", ondelete="cascade"), nullable=False),
-        sa.Column("organization_id", UUID(as_uuid=True),
-                  sa.ForeignKey("organizations.id", ondelete="cascade"),
-                  nullable=False),
+        sa.Column(
+            "id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")
+        ),
+        sa.Column(
+            "user_id",
+            UUID(as_uuid=True),
+            sa.ForeignKey("users.id", ondelete="cascade"),
+            nullable=False,
+        ),
+        sa.Column(
+            "organization_id",
+            UUID(as_uuid=True),
+            sa.ForeignKey("organizations.id", ondelete="cascade"),
+            nullable=False,
+        ),
         sa.Column("name", sa.String(255), nullable=False),
         sa.Column("pubkey", sa.Text, nullable=False),
         sa.Column("device_jwt_jti", sa.String(64)),
         sa.Column("last_seen_at", sa.DateTime(timezone=True)),
         sa.Column("revoked_at", sa.DateTime(timezone=True)),
-        sa.Column("created_at", sa.DateTime(timezone=True),
-                  server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
     )
     op.create_index("ix_aki_devices_user", "aki_devices", ["user_id"])
 
@@ -352,8 +439,14 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     for table in (
-        "aki_devices", "brain_facts", "brain_chunks", "brain_sources",
-        "job_events", "jobs", "memberships", "departments",
+        "aki_devices",
+        "brain_facts",
+        "brain_chunks",
+        "brain_sources",
+        "job_events",
+        "jobs",
+        "memberships",
+        "departments",
     ):
         op.execute(f"drop policy if exists {table}_org_isolation on {table}")
         op.execute(f"alter table {table} disable row level security")
@@ -374,8 +467,7 @@ def downgrade() -> None:
 
     # Revert connections.department_id and restore the old index.
     op.drop_index("ix_connections_dept_provider", table_name="connections")
-    op.create_index("ix_connections_org_provider",
-                    "connections", ["organization_id", "provider"])
+    op.create_index("ix_connections_org_provider", "connections", ["organization_id", "provider"])
     op.drop_column("connections", "department_id")
 
     op.drop_index("ix_departments_org", table_name="departments")

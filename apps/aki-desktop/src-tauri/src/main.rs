@@ -1,6 +1,6 @@
 // Aki desktop — Tauri tray app entrypoint.
 //
-// Responsibilities (scaffold today, full implementation per README):
+// Responsibilities:
 //   1. Register a system tray icon and a global ⌘⇧Space shortcut to
 //      toggle the chat window.
 //   2. On first run, generate an Ed25519 keypair, store the private key
@@ -8,12 +8,8 @@
 //      pairing.
 //   3. Run the pair-complete RPC against the cloud control plane and
 //      stash the returned device JWT in the keychain.
-//   4. (Later) Embed a local hermes-agent subprocess, maintain a
-//      SQLite journal, and batch-sync to /v1/brain/ingest.
-//
-// Most of the heavy lifting is stubbed with TODOs — the file structure is
-// what matters for the scaffold so the Tauri toolchain wires correctly
-// on first `cargo run`.
+//   4. Embed a local hermes-agent subprocess, maintain a SQLite journal,
+//      and batch-sync to /v1/brain/ingest.
 
 #![cfg_attr(
     all(not(debug_assertions), target_os = "windows"),
@@ -27,6 +23,7 @@ mod sync;
 
 use serde::{Deserialize, Serialize};
 use tauri::{
+    ipc::Channel,
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
     Manager,
@@ -45,6 +42,11 @@ struct PairCompleteResponse {
     device_id: String,
     device_jwt: String,
     expires_at: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct SseChunk {
+    text: String,
 }
 
 #[tauri::command]
@@ -104,6 +106,54 @@ async fn start_local_hermes() -> Result<hermes::HermesHandle, String> {
     hermes::start_or_attach().await.map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn send_chat_message(
+    messages: Vec<serde_json::Value>,
+    on_chunk: Channel<SseChunk>,
+) -> Result<(), String> {
+    let handle = hermes::start_or_attach().await.map_err(|e| e.to_string())?;
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(90))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let resp = client
+        .post(format!("{}/v1/chat/completions", handle.base_url))
+        .bearer_auth(&handle.api_key)
+        .json(&serde_json::json!({
+            "model": "hermes-agent",
+            "messages": messages,
+            "stream": true,
+        }))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("chat {status}: {body}"));
+    }
+
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+        buf.extend_from_slice(&chunk);
+        while let Some(end) = buf.windows(2).position(|w| w == b"\n\n").map(|i| i + 2) {
+            let text = String::from_utf8_lossy(&buf[..end]).to_string();
+            on_chunk.send(SseChunk { text }).map_err(|e| e.to_string())?;
+            buf.drain(..end);
+        }
+    }
+
+    if !buf.is_empty() {
+        let text = String::from_utf8_lossy(&buf).to_string();
+        on_chunk.send(SseChunk { text }).map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
 fn main() {
     tracing_subscriber::fmt::init();
 
@@ -112,7 +162,7 @@ fn main() {
         .plugin(tauri_plugin_positioner::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
-            pair_device, open_chat, add_journal_note, is_paired, start_local_hermes
+            pair_device, open_chat, add_journal_note, is_paired, start_local_hermes, send_chat_message
         ])
         .setup(|app| {
             // ⌘⇧Space → show/focus the chat window.
@@ -150,7 +200,16 @@ fn main() {
                 })
                 .build(app)?;
 
-            // Background sync loop. Stub for now.
+            // If the device isn't paired yet, show the window immediately
+            // so the user sees the pairing screen on first launch.
+            if auth::load_device_jwt().unwrap_or(None).is_none() {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+            }
+
+            // Background sync loop.
             tauri::async_runtime::spawn(sync::sync_loop());
             Ok(())
         })

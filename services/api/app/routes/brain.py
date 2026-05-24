@@ -9,7 +9,14 @@ ACL semantics:
   `[org_id, dept_id?, user_id]` for the writing principal.
 - On retrieve, the requester's principals are `[org_id, *department_ids,
   user_id]`. Intersection happens after RRF in `brain.retrieval`.
+
+RBAC:
+  - ingest  → brain:ingest  (admin+)
+  - retrieve → brain:retrieve (all authenticated)
+  - list sources → brain:retrieve (all authenticated)
+  - export  → brain:export  (owner/admin)
 """
+
 from __future__ import annotations
 
 import json
@@ -18,7 +25,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select, text
@@ -31,9 +38,9 @@ from app.brain.embeddings import embed
 from app.brain.retrieval import retrieve as retrieve_hits
 from app.config import get_settings
 from app.db import session_for_org
-from app.middleware import get_principal, get_session
+from app.middleware import get_session
 from app.models import BrainChunk, BrainSource
-
+from app.rbac import Permission, require_permission
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/brain", tags=["brain"])
@@ -58,7 +65,7 @@ class IngestResponse(BaseModel):
 @router.post("/ingest", response_model=IngestResponse)
 async def ingest(
     body: IngestBody,
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_permission(Permission.BRAIN_INGEST)),
     db: AsyncSession = Depends(get_session),
 ) -> IngestResponse:
     settings = get_settings()
@@ -76,9 +83,7 @@ async def ingest(
         ).scalar_one_or_none()
         if existing is not None:
             count = (
-                await db.execute(
-                    select(BrainChunk.id).where(BrainChunk.source_id == existing)
-                )
+                await db.execute(select(BrainChunk.id).where(BrainChunk.source_id == existing))
             ).all()
             return IngestResponse(source_id=existing, chunks=len(count))
 
@@ -106,7 +111,7 @@ async def ingest(
     )
     if chunks:
         embeddings = await embed([c.content for c in chunks])
-        for chunk, vec in zip(chunks, embeddings):
+        for chunk, vec in zip(chunks, embeddings, strict=False):
             db.add(
                 BrainChunk(
                     id=uuid4(),
@@ -161,7 +166,7 @@ class RetrieveResponse(BaseModel):
 @router.post("/retrieve", response_model=RetrieveResponse)
 async def retrieve(
     body: RetrieveBody,
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_permission(Permission.BRAIN_RETRIEVE)),
     db: AsyncSession = Depends(get_session),
 ) -> RetrieveResponse:
     principals = _default_acl(principal)
@@ -220,12 +225,10 @@ class SourceOut(BaseModel):
 async def list_sources(
     scope: Literal["org", "department", "user"] | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_permission(Permission.BRAIN_RETRIEVE)),
     db: AsyncSession = Depends(get_session),
 ) -> list[SourceOut]:
-    q = select(BrainSource).where(
-        BrainSource.organization_id == principal.organization_id
-    )
+    q = select(BrainSource).where(BrainSource.organization_id == principal.organization_id)
     if scope:
         q = q.where(BrainSource.scope == scope)
     q = q.order_by(BrainSource.created_at.desc()).limit(limit)
@@ -258,7 +261,7 @@ async def export_jsonl(
         "job_summary,aki_journal",
         description="Comma-separated brain_sources.kind values to include.",
     ),
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_permission(Permission.BRAIN_EXPORT)),
 ) -> StreamingResponse:
     """Stream a JSONL training dataset built from Brain.
 
@@ -294,8 +297,11 @@ async def export_jsonl(
         try:
             async with session_for_org(org_id) as db:
                 await append_audit(
-                    db, org_id, actor=principal.user_id,
-                    action="brain.export", target=None,
+                    db,
+                    org_id,
+                    actor=principal.user_id,
+                    action="brain.export",
+                    target=None,
                     payload={"kinds": sorted(requested), "rows": rows_yielded},
                 )
                 await db.commit()
@@ -306,9 +312,7 @@ async def export_jsonl(
         gen(),
         media_type="application/x-ndjson",
         headers={
-            "Content-Disposition": (
-                f'attachment; filename="brain-{org_id}.jsonl"'
-            ),
+            "Content-Disposition": (f'attachment; filename="brain-{org_id}.jsonl"'),
         },
     )
 

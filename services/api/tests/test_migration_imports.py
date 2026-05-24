@@ -4,15 +4,13 @@ surface. Doesn't run SQL — that requires a live Postgres.
 
 Module name starts with a digit so we use importlib.util directly rather
 than import_module (which follows identifier rules)."""
+
 import importlib.util
 from pathlib import Path
 
 
 def test_migration_0003_imports():
-    path = (
-        Path(__file__).resolve().parents[1]
-        / "alembic" / "versions" / "0003_dept_jobs_brain.py"
-    )
+    path = Path(__file__).resolve().parents[1] / "alembic" / "versions" / "0003_dept_jobs_brain.py"
     spec = importlib.util.spec_from_file_location("mig_0003", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -24,10 +22,7 @@ def test_migration_0003_imports():
 
 def test_migration_0001_still_intact():
     """Catches a downstream rename that would break the chain."""
-    path = (
-        Path(__file__).resolve().parents[1]
-        / "alembic" / "versions" / "0001_initial.py"
-    )
+    path = Path(__file__).resolve().parents[1] / "alembic" / "versions" / "0001_initial.py"
     spec = importlib.util.spec_from_file_location("mig_0001", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

@@ -8,6 +8,7 @@ later means walking from row 1 forward and recomputing each hash.
 Per-org serialization is enforced with a transaction-scoped advisory lock so
 concurrent inserts can't race and pick the same prev_hash.
 """
+
 from __future__ import annotations
 
 import hashlib

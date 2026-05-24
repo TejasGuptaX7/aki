@@ -4,8 +4,9 @@ Revision ID: 0001
 Revises:
 Create Date: 2026-05-15
 """
-from alembic import op
+
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 revision = "0001"
@@ -20,75 +21,103 @@ def upgrade() -> None:
 
     op.create_table(
         "organizations",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True,
-                  server_default=sa.text("gen_random_uuid()")),
+        sa.Column(
+            "id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")
+        ),
         sa.Column("name", sa.String(255), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True),
-                  server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
     )
 
     op.create_table(
         "users",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True,
-                  server_default=sa.text("gen_random_uuid()")),
+        sa.Column(
+            "id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")
+        ),
         sa.Column("clerk_user_id", sa.String(255), nullable=False, unique=True),
         sa.Column("email", sa.String(320), nullable=False),
-        sa.Column("organization_id", UUID(as_uuid=True),
-                  sa.ForeignKey("organizations.id", ondelete="restrict"),
-                  nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True),
-                  server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "organization_id",
+            UUID(as_uuid=True),
+            sa.ForeignKey("organizations.id", ondelete="restrict"),
+            nullable=False,
+        ),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
     )
     op.create_index("ix_users_org", "users", ["organization_id"])
 
     op.create_table(
         "connections",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True,
-                  server_default=sa.text("gen_random_uuid()")),
-        sa.Column("organization_id", UUID(as_uuid=True),
-                  sa.ForeignKey("organizations.id"), nullable=False),
+        sa.Column(
+            "id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")
+        ),
+        sa.Column(
+            "organization_id", UUID(as_uuid=True), sa.ForeignKey("organizations.id"), nullable=False
+        ),
         sa.Column("provider", sa.String(64), nullable=False),
-        sa.Column("layer", sa.String(32), nullable=False),       # native|composio|custom
+        sa.Column("layer", sa.String(32), nullable=False),  # native|composio|custom
         sa.Column("external_account_id", sa.String(255)),
         sa.Column("scopes", JSONB, server_default=sa.text("'[]'::jsonb")),
         sa.Column("config", JSONB, server_default=sa.text("'{}'::jsonb")),
         sa.Column("status", sa.String(32), server_default="pending", nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True),
-                  server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
     )
-    op.create_index("ix_connections_org_provider",
-                    "connections", ["organization_id", "provider"])
+    op.create_index("ix_connections_org_provider", "connections", ["organization_id", "provider"])
 
     op.create_table(
         "org_memory",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True,
-                  server_default=sa.text("gen_random_uuid()")),
-        sa.Column("organization_id", UUID(as_uuid=True),
-                  sa.ForeignKey("organizations.id"), nullable=False),
+        sa.Column(
+            "id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")
+        ),
+        sa.Column(
+            "organization_id", UUID(as_uuid=True), sa.ForeignKey("organizations.id"), nullable=False
+        ),
         sa.Column("key", sa.String(255), nullable=False),
         sa.Column("value", sa.Text, nullable=False),
         sa.Column("version", sa.BigInteger, server_default="1", nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True),
-                  server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.UniqueConstraint("organization_id", "key", name="uq_org_memory_key"),
     )
 
     op.create_table(
         "audit_log",
         sa.Column("id", sa.BigInteger, primary_key=True, autoincrement=True),
-        sa.Column("organization_id", UUID(as_uuid=True),
-                  sa.ForeignKey("organizations.id"), nullable=False),
+        sa.Column(
+            "organization_id", UUID(as_uuid=True), sa.ForeignKey("organizations.id"), nullable=False
+        ),
         sa.Column("actor", sa.String(255), nullable=False),
         sa.Column("action", sa.String(128), nullable=False),
         sa.Column("target", sa.String(255)),
         sa.Column("payload", JSONB, server_default=sa.text("'{}'::jsonb")),
         sa.Column("content_hash", sa.String(64), nullable=False),
         sa.Column("prev_hash", sa.String(64)),
-        sa.Column("created_at", sa.DateTime(timezone=True),
-                  server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
     )
-    op.create_index("ix_audit_org_created",
-                    "audit_log", ["organization_id", "created_at"])
+    op.create_index("ix_audit_org_created", "audit_log", ["organization_id", "created_at"])
 
     # Block UPDATE/DELETE on audit_log at the database level.
     op.execute("""

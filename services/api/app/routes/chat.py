@@ -1,7 +1,7 @@
 """OpenAI-compatible chat completions proxy.
 
 POST /v1/chat/completions →
-  1. RBAC stub (returns silently for v1; layered later when memberships land)
+  1. RBAC check (chat:create permission + department membership)
   2. ensure_running(org_id) — cold-starts the per-org Hermes container if needed
   3. write a chat.start audit row
   4. forward request body to Hermes' OpenAI-compat API with the per-org bearer
@@ -14,6 +14,7 @@ Hermes' streaming response is OpenAI-compatible chunks interleaved with custom
 `event: hermes.*` lines (see Hermes 0.13 gateway code). We pass every byte to
 the client untouched and parse a side-buffer for audit purposes.
 """
+
 from __future__ import annotations
 
 import json
@@ -22,21 +23,24 @@ import time
 from typing import Any
 from uuid import UUID
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent_runtime import HermesProcess, ensure_running
 from app.audit import append_audit
 from app.auth import Principal
+from app.brain import hydrate_messages
 from app.config import get_settings
+from app.cost_caps import enforce_spend_cap
 from app.db import session_for_org
-from app.middleware import get_principal, get_session
+from app.limits import limiter, org_limiter
+from app.middleware import get_session
 from app.models import Department
 from app.pricing import estimate_cost_usd
-
+from app.rbac import Permission, assert_department_access, require_permission
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1", tags=["chat"])
@@ -73,14 +77,7 @@ Cite sources for any factual claims pulled from a tool.
 """
 
 
-async def _rbac_check(principal: Principal, action: str) -> None:
-    """v1 stub. Replace with real check when memberships table lands."""
-    return None
-
-
-async def _resolve_department_id(
-    request: Request, principal: Principal, db: AsyncSession
-) -> UUID:
+async def _resolve_department_id(request: Request, principal: Principal, db: AsyncSession) -> UUID:
     """Resolve which department's Hermes container should handle this request.
 
     Order:
@@ -144,9 +141,15 @@ def _parse_sse_blocks(chunk_buf: str):
 
 
 async def _flush_audit(
-    org_id, actor: str, dept_id, container_id: str,
-    tool_events: list[dict], final_usage: dict | None,
-    duration_ms: int, user_text: str, assistant_text: str,
+    org_id,
+    actor: str,
+    dept_id,
+    container_id: str,
+    tool_events: list[dict],
+    final_usage: dict | None,
+    duration_ms: int,
+    user_text: str,
+    assistant_text: str,
 ) -> None:
     """Open a fresh session and write tool_call + chat.complete rows, plus
     a `brain_source(kind=chat_turn)` so future retrieval can cite this
@@ -178,11 +181,15 @@ async def _flush_audit(
         try:
             usage = final_usage or {}
             model_name = get_settings().hermes_model_name
-            cost_usd = estimate_cost_usd(
-                model_name,
-                int(usage.get("prompt_tokens") or 0),
-                int(usage.get("completion_tokens") or 0),
-            ) if usage else 0.0
+            cost_usd = (
+                estimate_cost_usd(
+                    model_name,
+                    int(usage.get("prompt_tokens") or 0),
+                    int(usage.get("completion_tokens") or 0),
+                )
+                if usage
+                else 0.0
+            )
             await append_audit(
                 db,
                 org_id,
@@ -200,12 +207,20 @@ async def _flush_audit(
         except Exception:
             log.exception("audit chat.complete failed")
 
-        # Write a chat_turn brain_source so future retrieval can cite this
-        # conversation. Best-effort; embed-failure shouldn't fail the chat.
+        # Persist the full turn into Brain so future retrieval can cite it.
         if assistant_text.strip() or user_text.strip():
             try:
-                await _ingest_chat_turn(
-                    db, org_id, actor, dept_id, user_text, assistant_text,
+                from app.brain import persist_turn
+
+                await persist_turn(
+                    db,
+                    org_id,
+                    dept_id,
+                    actor,
+                    kind="chat_turn",
+                    user_text=user_text,
+                    assistant_text=assistant_text,
+                    origin="hermes",
                 )
             except Exception:
                 log.exception("brain ingest of chat turn failed")
@@ -213,78 +228,14 @@ async def _flush_audit(
         await db.commit()
 
 
-async def _ingest_chat_turn(
-    db, org_id, actor: str, dept_id, user_text: str, assistant_text: str,
-) -> None:
-    """Index `USER: …\n\nASSISTANT: …` into Brain as a chat_turn source.
-
-    Imports kept local so audit-only paths don't pull pgvector/openai unless
-    Brain is needed."""
-    from uuid import uuid4
-    from app.brain.chunker import chunk_text
-    from app.brain.embeddings import embed
-    from app.models import BrainChunk, BrainSource
-
-    settings = get_settings()
-    title = user_text.strip().splitlines()[0][:200] or "chat"
-    body = f"USER:\n{user_text}\n\nASSISTANT:\n{assistant_text}"
-
-    source = BrainSource(
-        id=uuid4(),
-        organization_id=org_id,
-        scope="department",
-        scope_id=dept_id,
-        kind="chat_turn",
-        origin="hermes",
-        uri=None,
-        title=title,
-        acl_principals=[str(org_id), str(dept_id), actor],
-    )
-    db.add(source)
-    await db.flush()
-
-    chunks = chunk_text(
-        body,
-        target_tokens=settings.brain_chunk_tokens,
-        overlap_chars=settings.brain_chunk_overlap,
-    )
-    if chunks:
-        try:
-            embeddings = await embed([c.content for c in chunks])
-        except Exception:
-            # Source row stays, chunks don't. Next time we get embeddings
-            # the user can re-ingest via /v1/brain/ingest if needed.
-            log.exception("embed failed for chat turn")
-            return
-        for chunk, vec in zip(chunks, embeddings):
-            db.add(
-                BrainChunk(
-                    id=uuid4(),
-                    source_id=source.id,
-                    organization_id=org_id,
-                    chunk_index=chunk.index,
-                    content=chunk.content,
-                    token_count=chunk.token_count,
-                    embedding=vec,
-                )
-            )
-
-    await append_audit(
-        db, org_id, actor=actor, action="brain.ingest",
-        target=str(source.id),
-        payload={"kind": "chat_turn", "origin": "hermes",
-                 "chunks": len(chunks), "title": title},
-    )
-
-
 @router.post("/chat/completions")
+@limiter.limit("120/minute")
+@org_limiter.limit("60/minute")
 async def chat_completions(
     request: Request,
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_permission(Permission.CHAT_CREATE)),
     db: AsyncSession = Depends(get_session),
 ):
-    await _rbac_check(principal, "chat.send")
-
     body = await request.body()
     # Inject Hermes' system prompt at the front of the messages list so the
     # agent has standing guidance (bot identity for Slack, ask before
@@ -292,6 +243,7 @@ async def chat_completions(
     user_text = ""
     try:
         import json as _json
+
         body_dict = _json.loads(body) if body else {}
         msgs = body_dict.get("messages") or []
         # The last user message is the one being asked right now — use that
@@ -308,6 +260,25 @@ async def chat_completions(
         log.exception("system-prompt injection failed; passing body through")
 
     dept_id = await _resolve_department_id(request, principal, db)
+
+    # RBAC: principal must have access to the resolved department.
+    await assert_department_access(principal, dept_id, min_permission=Permission.CHAT_CREATE)
+
+    # Enforce spend cap before expensive LLM call
+    await enforce_spend_cap(db, principal.organization_id, estimated_cost=0.05)
+
+    # Hydrate messages with Brain context before sending to Hermes
+    try:
+        body_dict = json.loads(body) if body else {}
+        msgs = body_dict.get("messages") or []
+        hydrated = await hydrate_messages(
+            db, principal.organization_id, dept_id, principal.user_id, msgs, k=5
+        )
+        body_dict["messages"] = hydrated
+        body = json.dumps(body_dict).encode("utf-8")
+    except Exception:
+        log.exception("brain hydration failed; continuing with original messages")
+
     proc: HermesProcess = await ensure_running(db, principal.organization_id, dept_id)
 
     await append_audit(
@@ -337,46 +308,54 @@ async def chat_completions(
         tail = ""
 
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0)) as c:
-                async with c.stream(
+            async with (
+                httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0)) as c,
+                c.stream(
                     "POST",
                     f"{proc.base_url}/v1/chat/completions",
                     content=body,
                     headers=headers,
-                ) as upstream:
-                    async for raw in upstream.aiter_bytes():
-                        yield raw
+                ) as upstream,
+            ):
+                async for raw in upstream.aiter_bytes():
+                    yield raw
+                    try:
+                        tail += raw.decode("utf-8", errors="replace")
+                    except Exception:
+                        continue
+                    blocks, tail = _parse_sse_blocks(tail)
+                    for event, data in blocks:
+                        if data == "[DONE]":
+                            continue
                         try:
-                            tail += raw.decode("utf-8", errors="replace")
+                            obj: Any = json.loads(data)
                         except Exception:
                             continue
-                        blocks, tail = _parse_sse_blocks(tail)
-                        for event, data in blocks:
-                            if data == "[DONE]":
-                                continue
-                            try:
-                                obj: Any = json.loads(data)
-                            except Exception:
-                                continue
-                            if event and event.startswith("hermes.tool"):
-                                tool_events.append(obj)
-                                continue
-                            if isinstance(obj, dict):
-                                # Accumulate assistant text from OpenAI delta
-                                # chunks so we can index the turn into Brain.
-                                for choice in obj.get("choices") or []:
-                                    piece = ((choice or {}).get("delta") or {}).get("content")
-                                    if isinstance(piece, str):
-                                        assistant_parts.append(piece)
-                                if "usage" in obj and obj["usage"]:
-                                    final_usage = obj["usage"]
+                        if event and event.startswith("hermes.tool"):
+                            tool_events.append(obj)
+                            continue
+                        if isinstance(obj, dict):
+                            # Accumulate assistant text from OpenAI delta
+                            # chunks so we can index the turn into Brain.
+                            for choice in obj.get("choices") or []:
+                                piece = ((choice or {}).get("delta") or {}).get("content")
+                                if isinstance(piece, str):
+                                    assistant_parts.append(piece)
+                            if "usage" in obj and obj["usage"]:
+                                final_usage = obj["usage"]
         finally:
             duration_ms = int((time.monotonic() - started) * 1000)
             try:
                 await _flush_audit(
-                    org_id, actor, dept_id, container_id,
-                    tool_events, final_usage, duration_ms,
-                    user_text, "".join(assistant_parts).strip(),
+                    org_id,
+                    actor,
+                    dept_id,
+                    container_id,
+                    tool_events,
+                    final_usage,
+                    duration_ms,
+                    user_text,
+                    "".join(assistant_parts).strip(),
                 )
             except Exception:
                 log.exception("audit flush failed")
