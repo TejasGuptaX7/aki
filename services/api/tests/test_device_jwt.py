@@ -40,7 +40,8 @@ def test_device_jwt_round_trip(monkeypatch):
 
     async def fake_lookup(did):
         assert did == device_id
-        return (user_clerk, org_id, dept_ids)
+        dept_roles = {d: "admin" for d in dept_ids}
+        return (user_clerk, org_id, dept_ids, dept_roles, "admin")
 
     monkeypatch.setattr(auth_mod, "_lookup_user_and_orgs_for_device", fake_lookup)
 

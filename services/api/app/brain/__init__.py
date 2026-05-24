@@ -6,3 +6,7 @@ intersects current-principal principals against that snapshot *after* RRF
 fusion. Live ACL re-checks against the source provider are deferred to a
 later phase.
 """
+
+from app.brain.hydration import hydrate_messages, persist_turn
+
+__all__ = ["hydrate_messages", "persist_turn"]

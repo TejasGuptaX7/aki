@@ -1,6 +1,6 @@
 # services/agent — Hermes per-org runtime
 
-One Hermes Agent process per organization, pinned to **v0.4.0**.
+One Hermes Agent process per organization, pinned to **v0.13.0**.
 Receives traffic from the control plane gateway (`services/api`), never from
 the browser directly.
 
@@ -19,11 +19,11 @@ See `docs/architecture.md` §4 for the design.
 
 ```bash
 # from repo root
-docker build -t aki-agent:0.4.0 services/agent
+docker build -t aki-agent:0.13.0 services/agent
 docker run --rm -p 8080:8080 \
   -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
   -v "$PWD/.local/hermes/dev-org":/workspace \
-  aki-agent:0.4.0
+  aki-agent:0.13.0
 ```
 
 The control plane materializes one `${HERMES_DATA_DIR}/<org_id>/` directory
@@ -32,7 +32,7 @@ files (`MEMORY.md`, `USER.md`) and OAuth tokens persist there between runs.
 
 ## What lives here
 
-- `Dockerfile` — image definition (Hermes 0.4.0 base).
+- `Dockerfile` — image definition (Hermes 0.13.0 base).
 - `hermes.config.yaml` — config **template** rendered with `envsubst` at boot.
 
 What does **not** live here: per-org state, secrets, or org-specific tool

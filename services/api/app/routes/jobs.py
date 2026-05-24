@@ -1,11 +1,18 @@
 """Jobs HTTP surface.
 
 Endpoints:
-  POST   /v1/jobs                  — create + enqueue
+  POST   /v1/jobs                  — create + enqueue (member+)
   GET    /v1/jobs                  — list (filterable by dept + status)
   GET    /v1/jobs/{id}             — single row
   GET    /v1/jobs/{id}/events      — SSE feed of job_events (live + history)
-  POST   /v1/jobs/{id}/cancel      — mark cancelled (best-effort; worker checks)
+  POST   /v1/jobs/{id}/cancel      — mark cancelled (creator or admin+)
+
+RBAC:
+  - create → job:create + department membership
+  - list   → job:read (filtered to accessible departments)
+  - get    → job:read
+  - cancel → job:cancel OR be the job creator
+  - events → job:read
 
 A job submission carries an optional `department_slug`; if omitted we fall
 back to the same resolution chain as chat (`X-Hermes-Department` header,
@@ -28,8 +35,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit import append_audit
 from app.auth import Principal
+from app.cost_caps import enforce_spend_cap
 from app.middleware import get_principal, get_session
 from app.models import Department, Job, JobEvent
+from app.rbac import (
+    Permission,
+    assert_department_access,
+    principal_has_permission,
+    require_permission,
+)
 
 
 log = logging.getLogger(__name__)
@@ -114,16 +128,17 @@ async def _resolve_dept(
 async def create_job(
     body: CreateJobBody,
     request: Request,
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_permission(Permission.JOB_CREATE)),
     db: AsyncSession = Depends(get_session),
 ) -> JobOut:
     dept_id = await _resolve_dept(request, principal, db, body.department_slug)
+    await assert_department_access(principal, dept_id, min_permission=Permission.JOB_CREATE)
+
+    # Enforce spend cap before expensive LLM job
+    await enforce_spend_cap(db, principal.organization_id, estimated_cost=0.10)
 
     is_scheduled = body.schedule_cron is not None
     status = "queued" if not is_scheduled else "waiting_human"  # waits for cron
-    # For an immediate run, next_run_at is None and the worker picks it up
-    # via the direct enqueue below. For cron jobs, set next_run_at = now
-    # so the next scheduler tick fires it (or set to schedule's next slot).
     next_run_at = None
     if is_scheduled:
         from app.scheduler import _next_fire
@@ -173,7 +188,7 @@ async def list_jobs(
     status: Literal["queued", "running", "waiting_human", "done", "failed",
                     "cancelled"] | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_permission(Permission.JOB_READ)),
     db: AsyncSession = Depends(get_session),
 ) -> list[JobOut]:
     q = select(Job).where(Job.organization_id == principal.organization_id)
@@ -183,6 +198,11 @@ async def list_jobs(
             Department.slug == department_slug,
         )
         q = q.where(Job.department_id.in_(sub))
+    # Non-admins only see jobs in departments they belong to.
+    if not principal.is_org_admin and principal.department_ids:
+        q = q.where(Job.department_id.in_(principal.department_ids))
+    elif not principal.is_org_admin:
+        return []
     if status:
         q = q.where(Job.status == status)
     q = q.order_by(Job.created_at.desc()).limit(limit)
@@ -193,13 +213,16 @@ async def list_jobs(
 @router.get("/{job_id}", response_model=JobOut)
 async def get_job(
     job_id: UUID,
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_permission(Permission.JOB_READ)),
     db: AsyncSession = Depends(get_session),
 ) -> JobOut:
     row = (
         await db.execute(select(Job).where(Job.id == job_id))
     ).scalar_one_or_none()
     if row is None:
+        raise HTTPException(404, "job not found")
+    # Non-admins can only read jobs in their departments.
+    if not principal.is_org_admin and row.department_id not in principal.department_ids:
         raise HTTPException(404, "job not found")
     return _to_out(row)
 
@@ -215,6 +238,15 @@ async def cancel_job(
     ).scalar_one_or_none()
     if row is None:
         raise HTTPException(404, "job not found")
+    # Non-admins can only cancel jobs in their departments.
+    if not principal.is_org_admin and row.department_id not in principal.department_ids:
+        raise HTTPException(404, "job not found")
+
+    # RBAC: admin+ can cancel any job; regular members can only cancel their own.
+    if not principal_has_permission(principal, Permission.JOB_CANCEL):
+        if row.actor != principal.user_id:
+            raise HTTPException(403, "only the job creator or an admin can cancel")
+
     if row.status in ("done", "cancelled"):
         return
     # Mark cancelled; the running worker checks status periodically and
@@ -235,7 +267,7 @@ async def cancel_job(
 @router.get("/{job_id}/events")
 async def stream_events(
     job_id: UUID,
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_permission(Permission.JOB_READ)),
     db: AsyncSession = Depends(get_session),
 ):
     """Server-Sent Events feed for live job_events.
@@ -248,6 +280,9 @@ async def stream_events(
         await db.execute(select(Job).where(Job.id == job_id))
     ).scalar_one_or_none()
     if row is None:
+        raise HTTPException(404, "job not found")
+    # Non-admins can only stream events for jobs in their departments.
+    if not principal.is_org_admin and row.department_id not in principal.department_ids:
         raise HTTPException(404, "job not found")
 
     org_id = principal.organization_id

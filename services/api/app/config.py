@@ -98,6 +98,13 @@ class Settings(BaseSettings):
     stripe_meter_event_name: str | None = None
     stripe_customer_id: str | None = None
 
+    # Resend (transactional email)
+    resend_api_key: str | None = None
+    resend_from_address: str | None = None
+
+    # OpenTelemetry observability
+    otlp_endpoint: str | None = None  # e.g. "http://localhost:4318/v1/traces"
+
 
     @field_validator("cors_origins", mode="before")
     @classmethod

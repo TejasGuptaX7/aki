@@ -9,6 +9,12 @@ ACL semantics:
   `[org_id, dept_id?, user_id]` for the writing principal.
 - On retrieve, the requester's principals are `[org_id, *department_ids,
   user_id]`. Intersection happens after RRF in `brain.retrieval`.
+
+RBAC:
+  - ingest  → brain:ingest  (admin+)
+  - retrieve → brain:retrieve (all authenticated)
+  - list sources → brain:retrieve (all authenticated)
+  - export  → brain:export  (owner/admin)
 """
 from __future__ import annotations
 
@@ -33,6 +39,7 @@ from app.config import get_settings
 from app.db import session_for_org
 from app.middleware import get_principal, get_session
 from app.models import BrainChunk, BrainSource
+from app.rbac import Permission, require_permission
 
 
 log = logging.getLogger(__name__)
@@ -58,7 +65,7 @@ class IngestResponse(BaseModel):
 @router.post("/ingest", response_model=IngestResponse)
 async def ingest(
     body: IngestBody,
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_permission(Permission.BRAIN_INGEST)),
     db: AsyncSession = Depends(get_session),
 ) -> IngestResponse:
     settings = get_settings()
@@ -161,7 +168,7 @@ class RetrieveResponse(BaseModel):
 @router.post("/retrieve", response_model=RetrieveResponse)
 async def retrieve(
     body: RetrieveBody,
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_permission(Permission.BRAIN_RETRIEVE)),
     db: AsyncSession = Depends(get_session),
 ) -> RetrieveResponse:
     principals = _default_acl(principal)
@@ -220,7 +227,7 @@ class SourceOut(BaseModel):
 async def list_sources(
     scope: Literal["org", "department", "user"] | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_permission(Permission.BRAIN_RETRIEVE)),
     db: AsyncSession = Depends(get_session),
 ) -> list[SourceOut]:
     q = select(BrainSource).where(
@@ -258,7 +265,7 @@ async def export_jsonl(
         "job_summary,aki_journal",
         description="Comma-separated brain_sources.kind values to include.",
     ),
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_permission(Permission.BRAIN_EXPORT)),
 ) -> StreamingResponse:
     """Stream a JSONL training dataset built from Brain.
 

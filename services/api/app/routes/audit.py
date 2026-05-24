@@ -2,6 +2,10 @@
 
 RLS scopes this automatically to the org via the session GUC. The hash chain
 fields are included so a client can verify the chain locally.
+
+RBAC:
+  - list → audit:read (all authenticated users)
+  - append-only; no write endpoints.
 """
 from __future__ import annotations
 
@@ -10,8 +14,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import Principal
-from app.middleware import get_principal, get_session
+from app.middleware import get_session
 from app.models import AuditLog
+from app.rbac import Permission, require_permission
 
 
 router = APIRouter(prefix="/audit", tags=["audit"])
@@ -22,7 +27,7 @@ async def list_audit(
     limit: int = Query(50, ge=1, le=200),
     after_id: int | None = Query(None, description="return rows with id > after_id (forward paging)"),
     before_id: int | None = Query(None, description="return rows with id < before_id (backward paging)"),
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_permission(Permission.AUDIT_READ)),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
     q = select(AuditLog).where(AuditLog.organization_id == principal.organization_id)

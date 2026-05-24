@@ -12,6 +12,12 @@ Two-step pair so the desktop never sees the user's Clerk session token:
 The device JWT is long-lived (30 days) and is verified by `auth.verify`
 when the `iss` claim is `aki-api`. Revoking a row in aki_devices sets
 `revoked_at`, which `_lookup_user_and_orgs_for_device` checks on every call.
+
+RBAC:
+  - pair_start  → any authenticated user
+  - pair_complete → public (desktop has no Clerk token)
+  - list_devices → device:read (own devices; admins see all org devices)
+  - revoke_device → device:revoke (admin can revoke any; users own only)
 """
 from __future__ import annotations
 
@@ -33,6 +39,7 @@ from app.auth import DEVICE_JWT_AUDIENCE, DEVICE_JWT_ISSUER, Principal
 from app.config import get_settings
 from app.middleware import get_principal, get_session
 from app.models import AkiDevice, User
+from app.rbac import Permission, principal_has_permission, require_permission
 
 
 log = logging.getLogger(__name__)
@@ -193,26 +200,36 @@ class DeviceOut(BaseModel):
 
 @router.get("", response_model=list[DeviceOut])
 async def list_devices(
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_permission(Permission.DEVICE_READ)),
     db: AsyncSession = Depends(get_session),
 ) -> list[DeviceOut]:
-    # Look up internal user_id, then list their devices in this org.
-    user_id = (
-        await db.execute(
-            select(User.id).where(User.clerk_user_id == principal.user_id)
-        )
-    ).scalar_one_or_none()
-    if user_id is None:
-        return []
+    # Admins see all org devices; regular users see only their own.
+    if principal_has_permission(principal, Permission.DEVICE_REVOKE):
+        rows = (
+            await db.execute(
+                select(AkiDevice)
+                .where(AkiDevice.organization_id == principal.organization_id)
+                .order_by(AkiDevice.created_at.desc())
+            )
+        ).scalars().all()
+    else:
+        user_id = (
+            await db.execute(
+                select(User.id).where(User.clerk_user_id == principal.user_id)
+            )
+        ).scalar_one_or_none()
+        if user_id is None:
+            return []
 
-    rows = (
-        await db.execute(
-            select(AkiDevice)
-            .where(AkiDevice.user_id == user_id)
-            .where(AkiDevice.organization_id == principal.organization_id)
-            .order_by(AkiDevice.created_at.desc())
-        )
-    ).scalars().all()
+        rows = (
+            await db.execute(
+                select(AkiDevice)
+                .where(AkiDevice.user_id == user_id)
+                .where(AkiDevice.organization_id == principal.organization_id)
+                .order_by(AkiDevice.created_at.desc())
+            )
+        ).scalars().all()
+
     return [
         DeviceOut(
             id=r.id,
@@ -231,24 +248,35 @@ async def revoke_device(
     principal: Principal = Depends(get_principal),
     db: AsyncSession = Depends(get_session),
 ) -> None:
-    # Verify the device belongs to the calling principal's user, then
-    # mark revoked. We don't delete the row so the audit chain is preserved.
-    user_id = (
-        await db.execute(
-            select(User.id).where(User.clerk_user_id == principal.user_id)
-        )
-    ).scalar_one_or_none()
-    if user_id is None:
-        raise HTTPException(404, "user not found")
-
-    row = (
-        await db.execute(
-            select(AkiDevice).where(
-                AkiDevice.id == device_id,
-                AkiDevice.user_id == user_id,
+    # Admins can revoke any device in the org.
+    if principal_has_permission(principal, Permission.DEVICE_REVOKE):
+        row = (
+            await db.execute(
+                select(AkiDevice).where(
+                    AkiDevice.id == device_id,
+                    AkiDevice.organization_id == principal.organization_id,
+                )
             )
-        )
-    ).scalar_one_or_none()
+        ).scalar_one_or_none()
+    else:
+        # Regular users can only revoke their own devices.
+        user_id = (
+            await db.execute(
+                select(User.id).where(User.clerk_user_id == principal.user_id)
+            )
+        ).scalar_one_or_none()
+        if user_id is None:
+            raise HTTPException(404, "user not found")
+
+        row = (
+            await db.execute(
+                select(AkiDevice).where(
+                    AkiDevice.id == device_id,
+                    AkiDevice.user_id == user_id,
+                )
+            )
+        ).scalar_one_or_none()
+
     if row is None:
         raise HTTPException(404, "device not found")
 

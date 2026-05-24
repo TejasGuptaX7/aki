@@ -14,6 +14,10 @@ before wiring Stripe.
 
 Full automation (nightly Stripe push, per-org subscription tier lookup,
 hard usage caps) lands when we're ready to take real payments.
+
+RBAC:
+  - usage  → billing:read  (admin/owner)
+  - rollup → billing:manage (owner only)
 """
 from __future__ import annotations
 
@@ -28,7 +32,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import Principal
 from app.config import get_settings
-from app.middleware import get_principal, get_session
+from app.middleware import get_session
+from app.rbac import Permission, require_permission
 
 
 log = logging.getLogger(__name__)
@@ -46,7 +51,7 @@ class UsageDay(BaseModel):
 @router.get("/usage", response_model=list[UsageDay])
 async def usage(
     days: int = 30,
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_permission(Permission.BILLING_READ)),
     db: AsyncSession = Depends(get_session),
 ) -> list[UsageDay]:
     if days < 1 or days > 365:
@@ -92,7 +97,7 @@ class RollupResponse(BaseModel):
 
 @router.post("/rollup", response_model=RollupResponse)
 async def rollup(
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_permission(Permission.BILLING_MANAGE)),
     db: AsyncSession = Depends(get_session),
 ) -> RollupResponse:
     """Sum cost for the previous full day (UTC) and (if Stripe is wired)

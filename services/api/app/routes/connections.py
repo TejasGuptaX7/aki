@@ -9,6 +9,11 @@ Three endpoints:
         runtime reloads its mcp.servers list.
   - GET  /connections
         List connections for the principal's org.
+
+RBAC:
+  - list   → connection:read (member+)
+  - create → connection:create (admin+)
+  - delete → connection:delete (admin+)
 """
 from __future__ import annotations
 
@@ -26,7 +31,8 @@ from app.config import get_settings
 from app.db import session_for_org
 from app.limits import limiter
 from app.middleware import get_principal, get_session
-from app.models import Connection
+from app.models import Connection, Department
+from app.rbac import Permission, require_permission
 
 
 log = logging.getLogger(__name__)
@@ -35,7 +41,7 @@ router = APIRouter(prefix="/connections", tags=["connections"])
 
 @router.get("")
 async def list_connections(
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_permission(Permission.CONNECTION_READ)),
     db: AsyncSession = Depends(get_session),
 ) -> list[dict]:
     rows = (
@@ -63,7 +69,7 @@ async def list_connections(
 async def oauth_start(
     request: Request,
     provider: str = Query(..., min_length=2, max_length=64),
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_permission(Permission.CONNECTION_CREATE)),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
     settings = get_settings()
@@ -81,6 +87,9 @@ async def oauth_start(
         log.exception("composio initiate_oauth failed for provider=%s", provider)
         raise HTTPException(502, f"upstream OAuth init failed: {e}")
 
+    # Resolve default department for this org.
+    dept_id = await _default_department_id(db, principal)
+
     # Dedupe: cleanup any stale pending rows for this (org, provider) so the
     # /connect page doesn't accumulate them on repeated click-throughs.
     await db.execute(
@@ -94,6 +103,7 @@ async def oauth_start(
         Connection(
             id=uuid4(),
             organization_id=principal.organization_id,
+            department_id=dept_id,
             provider=provider,
             external_account_id=link.connected_account_id,
             scopes=[],
@@ -117,7 +127,7 @@ async def oauth_start(
 @limiter.limit(lambda: get_settings().rate_limit_oauth)
 async def enable_browser(
     request: Request,
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_permission(Permission.CONNECTION_CREATE)),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
     """Toggle Browser Use Cloud on for this org. No OAuth — the API key
@@ -134,11 +144,14 @@ async def enable_browser(
         )
     ).scalar_one_or_none()
 
+    dept_id = await _default_department_id(db, principal)
+
     if existing is None:
         db.add(
             Connection(
                 id=uuid4(),
                 organization_id=principal.organization_id,
+                department_id=dept_id,
                 provider="browser",
                 external_account_id=None,
                 scopes=[],
@@ -161,7 +174,7 @@ async def enable_browser(
 
 @router.post("/browser/disable", status_code=status.HTTP_204_NO_CONTENT)
 async def disable_browser(
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_permission(Permission.CONNECTION_DELETE)),
     db: AsyncSession = Depends(get_session),
 ) -> None:
     existing = (
@@ -213,10 +226,13 @@ async def oauth_callback(
             )
         ).scalar_one_or_none()
 
+        dept_id = await _default_department_id_for_org(db, org_id)
+
         if row is None:
             row = Connection(
                 id=uuid4(),
                 organization_id=org_id,
+                department_id=dept_id,
                 provider=state.toolkit_slug,
                 external_account_id=connected_account_id,
                 scopes=[],
@@ -246,6 +262,36 @@ async def oauth_callback(
     return RedirectResponse(
         url=f"{get_settings().web_base_url.rstrip('/')}/connect?ok=1", status_code=302,
     )
+
+
+async def _default_department_id(db: AsyncSession, principal: Principal) -> UUID:
+    """Return the principal's first department, or the org's first department."""
+    if principal.department_ids:
+        return principal.department_ids[0]
+    row = await db.execute(
+        select(Department.id)
+        .where(Department.organization_id == principal.organization_id)
+        .order_by(Department.created_at.asc())
+        .limit(1)
+    )
+    dept = row.scalar_one_or_none()
+    if dept is None:
+        raise HTTPException(400, "no departments exist in this organization")
+    return dept
+
+
+async def _default_department_id_for_org(db: AsyncSession, org_id: UUID) -> UUID:
+    """Return the first department for an org (used in public callbacks)."""
+    row = await db.execute(
+        select(Department.id)
+        .where(Department.organization_id == org_id)
+        .order_by(Department.created_at.asc())
+        .limit(1)
+    )
+    dept = row.scalar_one_or_none()
+    if dept is None:
+        raise HTTPException(400, "no departments exist in this organization")
+    return dept
 
 
 def _failed_redirect(message: str) -> RedirectResponse:

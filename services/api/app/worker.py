@@ -36,6 +36,7 @@ from uuid import UUID
 import httpx
 
 from app.brain.chunker import chunk_text
+from app.brain.hydration import hydrate_messages
 from app.config import get_settings
 # Heavy deps (sqlalchemy, arq, internal models) are imported lazily inside
 # the functions that use them so the SSE parser stays unit-testable
@@ -301,13 +302,24 @@ async def _run_brief(
     async with session_for_org(org_id) as db:
         proc = await ensure_running(db, org_id, dept_id)
 
+    # Hydrate the brief with relevant Brain context before execution
+    messages = [
+        {"role": "system", "content": WORKER_SYSTEM_PROMPT},
+        {"role": "user", "content": brief},
+    ]
+    try:
+        from app.db import session_for_org as _sfo_hydrate
+        async with _sfo_hydrate(org_id) as db:
+            messages = await hydrate_messages(
+                db, org_id, dept_id, "worker:arq", messages, k=5
+            )
+    except Exception:
+        log.exception("brain hydration failed for job %s; continuing without context", job_id)
+
     payload = {
         "model": get_settings().hermes_model_name,
         "stream": True,
-        "messages": [
-            {"role": "system", "content": WORKER_SYSTEM_PROMPT},
-            {"role": "user", "content": brief},
-        ],
+        "messages": messages,
     }
     body = json.dumps(payload).encode()
     headers = {

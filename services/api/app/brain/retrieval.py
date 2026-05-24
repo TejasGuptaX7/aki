@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.brain.acl import is_allowed
 from app.brain.embeddings import embed
+from app.brain.reranker import rerank
 
 
 CANDIDATE_N = 50            # vector + BM25 candidates merged before RRF
@@ -136,15 +137,20 @@ async def retrieve(
         if len(eligible) >= k:
             break
 
+    # Cross-encoder rerank the ACL-filtered candidates for better ordering.
+    passages = [row["content"] for row in eligible[:k]]
+    reranked = rerank(query, passages, top_k=k)
+
     hits: list[BrainHit] = []
-    for row in eligible[:k]:
+    for original_idx, rerank_score in reranked:
+        row = eligible[original_idx]
         hits.append(
             BrainHit(
                 source_id=row["source_id"],
                 chunk_id=row["chunk_id"],
                 title=row.get("title"),
                 content=row["content"],
-                score=float(row["_score"]),
+                score=float(rerank_score),
                 provenance={
                     "kind": row.get("kind"),
                     "origin": row.get("origin"),

@@ -1,0 +1,47 @@
+# Keep this scoped to the build context that services/api/Dockerfile receives.
+# The Dockerfile copies the whole services/api directory into /app.
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Test artifacts
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+tests/
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs / databases
+*.log
+*.sqlite3
+*.db
+
+# Alembic cache (not the actual migrations)
+alembic/__pycache__/
+alembic/versions/__pycache__/

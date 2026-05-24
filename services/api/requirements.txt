@@ -41,3 +41,16 @@ croniter>=2.0          # cron expression evaluator used by scheduler
 cryptography>=42       # ed25519 device-JWT signing
 # ─── Phase 4: brain v2 ────────────────────────────────────────────────────
 cachetools>=5.3        # TTLCache for live ACL recheck
+
+# ─── Observability (OpenTelemetry) ────────────────────────────────────────
+opentelemetry-api>=1.24
+opentelemetry-sdk>=1.24
+opentelemetry-instrumentation>=0.45b0
+opentelemetry-instrumentation-sqlalchemy>=0.45b0
+opentelemetry-exporter-otlp>=1.24
+
+# ─── Production server ────────────────────────────────────────────────────
+gunicorn>=22.0         # multi-worker WSGI server for FastAPI
+
+# ─── Optional but recommended for production Brain quality ────────────────
+# sentence-transformers>=3.0   # cross-encoder reranking (install if GPU available)

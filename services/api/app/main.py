@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import logging
+import sys
 import uuid
 
 from fastapi import FastAPI, Request
@@ -12,10 +13,52 @@ from slowapi.middleware import SlowAPIMiddleware
 
 from app.agent_runtime import hibernation_loop, reap_orphans, shutdown_all
 from app.config import get_settings
-from app.limits import limiter
+from app.limits import limiter, configure_limiters
+from app.logging_middleware import AccessLogMiddleware
+from app.security import SecurityHeadersMiddleware
+from app.telemetry import init_telemetry
+
+
+def _configure_logging() -> None:
+    """Structured JSON logging for production; pretty text for dev."""
+    settings = get_settings()
+    try:
+        import structlog
+        processors = [
+            structlog.contextvars.merge_contextvars,
+            structlog.processors.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.stdlib.ExtraAdder(),
+        ]
+        if settings.app_env == "prod":
+            processors.append(structlog.processors.JSONRenderer())
+        else:
+            processors.append(structlog.dev.ConsoleRenderer(colors=True))
+        structlog.configure(
+            processors=processors,
+            wrapper_class=structlog.stdlib.BoundLogger,
+            context_class=dict,
+            logger_factory=structlog.stdlib.LoggerFactory(),
+            cache_logger_on_first_use=True,
+        )
+        # Replace stdlib logging handlers too
+        logging.basicConfig(
+            format="%(message)s",
+            stream=sys.stdout,
+            level=logging.INFO if settings.app_env == "prod" else logging.DEBUG,
+        )
+    except ImportError:
+        # structlog not installed — fall back to plain stdlib
+        logging.basicConfig(
+            level=logging.INFO if settings.app_env == "prod" else logging.DEBUG,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        )
+
+
+_configure_logging()
 from app.routes import (
-    audit, billing, brain, chat, connections, departments, devices,
-    health, jobs, me, webhooks,
+    admin, audit, billing, brain, chat, connections, departments, devices,
+    gdpr, health, jobs, me, metrics, webhooks,
 )
 from app.scheduler import scheduler_loop
 
@@ -25,9 +68,21 @@ log = logging.getLogger("hermes")
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup: reap orphaned containers from any previous crashed run.
+    """Startup: reap orphaned containers, init telemetry, configure rate limits.
     Background: hibernate idle per-org Hermes containers.
     Shutdown: stop everything tracked."""
+    # Initialize observability
+    try:
+        init_telemetry()
+    except Exception:
+        log.exception("telemetry init failed (continuing startup)")
+
+    # Configure rate limiting backend
+    try:
+        await configure_limiters()
+    except Exception:
+        log.exception("rate limiter config failed (continuing startup)")
+
     try:
         n = await reap_orphans()
         if n:
@@ -60,6 +115,12 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_middleware(SlowAPIMiddleware)
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Structured access logging
+app.add_middleware(AccessLogMiddleware)
+
+# Security headers
+app.add_middleware(SecurityHeadersMiddleware)
 
 # CORS — empty list means no browser clients (curl/SDK only).
 if settings.cors_origins:
@@ -104,4 +165,7 @@ app.include_router(brain.router)
 app.include_router(devices.router)
 app.include_router(departments.router)
 app.include_router(jobs.router)
+app.include_router(admin.router)
 app.include_router(billing.router)
+app.include_router(gdpr.router)
+app.include_router(metrics.router)

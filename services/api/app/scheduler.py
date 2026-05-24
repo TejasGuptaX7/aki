@@ -27,7 +27,9 @@ from app.db import SessionLocal
 log = logging.getLogger("aki.scheduler")
 
 SCHEDULER_TICK_SECONDS = 30
-BILLING_TICK_HOUR_UTC = 1   # 01:00 UTC nightly
+BILLING_TICK_HOUR_UTC = 1       # 01:00 UTC nightly
+CONSOLIDATION_TICK_HOUR_UTC = 3   # 03:00 UTC nightly
+RETENTION_TICK_HOUR_UTC = 4       # 04:00 UTC nightly
 
 
 async def scheduler_loop() -> None:
@@ -39,6 +41,8 @@ async def scheduler_loop() -> None:
          for every org with audit activity in the previous day.
     """
     last_billing_day = None
+    last_consolidation_day = None
+    last_retention_day = None
     while True:
         try:
             n = await _tick()
@@ -47,9 +51,10 @@ async def scheduler_loop() -> None:
         except Exception:
             log.exception("scheduler tick failed")
 
+        now_utc = datetime.now(timezone.utc)
+        today = now_utc.date()
+
         try:
-            now_utc = datetime.now(timezone.utc)
-            today = now_utc.date()
             if now_utc.hour == BILLING_TICK_HOUR_UTC and last_billing_day != today:
                 count = await _billing_tick()
                 log.info("billing tick: rolled up %d org(s) for %s",
@@ -57,6 +62,22 @@ async def scheduler_loop() -> None:
                 last_billing_day = today
         except Exception:
             log.exception("billing tick failed")
+
+        try:
+            if now_utc.hour == CONSOLIDATION_TICK_HOUR_UTC and last_consolidation_day != today:
+                count = await _consolidation_tick()
+                log.info("consolidation tick: processed %d org(s)", count)
+                last_consolidation_day = today
+        except Exception:
+            log.exception("consolidation tick failed")
+
+        try:
+            if now_utc.hour == RETENTION_TICK_HOUR_UTC and last_retention_day != today:
+                count = await _retention_tick()
+                log.info("retention tick: processed %d org(s)", count)
+                last_retention_day = today
+        except Exception:
+            log.exception("retention tick failed")
 
         await asyncio.sleep(SCHEDULER_TICK_SECONDS)
 
@@ -135,11 +156,42 @@ async def _billing_tick() -> int:
 
         await db.commit()
 
-    # Stripe push happens out-of-band via /v1/billing/rollup (idempotent on
-    # the same window). Operators can wire a separate cron that hits that
-    # endpoint per org if they prefer push-on-rollup semantics.
-    _ = settings
     return rolled
+
+
+async def _consolidation_tick() -> int:
+    """Run memory consolidation for every active organization."""
+    from app.brain.consolidation import run_consolidation
+    from app.db import SessionLocal
+
+    processed = 0
+    async with SessionLocal() as db:
+        await db.execute(text("SET LOCAL row_security = off"))
+        orgs = (
+            await db.execute(
+                text("""
+                    select distinct organization_id
+                    from audit_log
+                    where created_at >= now() - interval '1 day'
+                """)
+            )
+        ).scalars().all()
+
+        for org_id in orgs:
+            try:
+                await run_consolidation(db, org_id)
+                processed += 1
+            except Exception:
+                log.exception("consolidation failed for org=%s", org_id)
+
+        await db.commit()
+    return processed
+
+
+async def _retention_tick() -> int:
+    """Run data retention enforcement for all organizations."""
+    from app.retention import retention_tick
+    return await retention_tick()
 
 
 async def _tick() -> int:

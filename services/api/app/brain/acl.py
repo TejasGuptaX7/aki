@@ -13,7 +13,7 @@ Per-origin live checks live in this module. What we check vs what we trust:
     SLACK_FETCH_CONVERSATION_INFO. If the channel is archived/private and
     we can't see it, fail closed. Per-user membership recheck waits on the
     aki_user_id ↔ slack_user_id mapping landing in a later phase.
-  - notion / drive: stubs that fail open with a logged warning until the
+  - notion / drive: stubs that fail closed with a logged warning until the
     integrations are wired.
 
 The cache is in-process (cachetools.TTLCache). For multi-worker prod, swap
@@ -93,14 +93,16 @@ async def _live_check(
         return await _live_check_slack(uri, org_id)
 
     if origin == "notion":
-        # TODO: call Notion pages.retrieve and check user's permissions.
-        log.warning("notion live ACL recheck not implemented; trusting snapshot for %s", uri)
-        return True
+        # Notion live ACL recheck requires a Notion integration token per org.
+        # Until Composio Notion actions are wired, fail closed.
+        log.warning("notion live ACL recheck not implemented; denying access for %s", uri)
+        return False
 
     if origin == "drive":
-        # TODO: drive.files.get with fields=permissions
-        log.warning("drive live ACL recheck not implemented; trusting snapshot for %s", uri)
-        return True
+        # Google Drive live ACL recheck requires a Drive API token per org.
+        # Until Composio Drive actions are wired, fail closed.
+        log.warning("drive live ACL recheck not implemented; denying access for %s", uri)
+        return False
 
     # Unknown origin: snapshot must do.
     log.info("no live ACL recheck for origin=%s; trusting snapshot", origin)
