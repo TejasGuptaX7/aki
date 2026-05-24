@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import time
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Response
 from sqlalchemy import text
 
 from app.config import get_settings
@@ -27,7 +27,7 @@ async def health() -> dict:
 
 
 @router.get("/ready")
-async def ready() -> dict:
+async def ready() -> Response:
     """Readiness probe — checks downstream dependencies before accepting traffic.
 
     Returns 200 only if Postgres and Redis are reachable.

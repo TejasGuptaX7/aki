@@ -16,9 +16,10 @@ storage (S3) before deletion.
 from __future__ import annotations
 
 import logging
+from typing import cast
 from uuid import UUID
 
-from sqlalchemy import text
+from sqlalchemy import CursorResult, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 log = logging.getLogger(__name__)
@@ -57,13 +58,16 @@ async def enforce_retention(db: AsyncSession, org_id: UUID) -> dict:
 
     for table, ts_col in tables:
         try:
-            r = await db.execute(
-                text(f"""
-                    delete from {table}
-                    where organization_id = :org
-                      and {ts_col} < now() - (:days * interval '1 day')
-                """),
-                {"org": str(org_id), "days": retention_days},
+            r = cast(
+                CursorResult,
+                await db.execute(
+                    text(f"""
+                        delete from {table}
+                        where organization_id = :org
+                          and {ts_col} < now() - (:days * interval '1 day')
+                    """),
+                    {"org": str(org_id), "days": retention_days},
+                ),
             )
             deleted[table] = r.rowcount
         except Exception as e:
@@ -71,14 +75,17 @@ async def enforce_retention(db: AsyncSession, org_id: UUID) -> dict:
 
     # Delete old jobs (and their events via cascade if configured)
     try:
-        r = await db.execute(
-            text("""
-                delete from jobs
-                where organization_id = :org
-                  and status in ('done', 'failed', 'cancelled')
-                  and updated_at < now() - (:days * interval '1 day')
-            """),
-            {"org": str(org_id), "days": retention_days},
+        r = cast(
+            CursorResult,
+            await db.execute(
+                text("""
+                    delete from jobs
+                    where organization_id = :org
+                      and status in ('done', 'failed', 'cancelled')
+                      and updated_at < now() - (:days * interval '1 day')
+                """),
+                {"org": str(org_id), "days": retention_days},
+            ),
         )
         deleted["jobs"] = r.rowcount
     except Exception as e:
@@ -86,16 +93,19 @@ async def enforce_retention(db: AsyncSession, org_id: UUID) -> dict:
 
     # Delete old brain_sources that no longer have chunks
     try:
-        r = await db.execute(
-            text("""
-                delete from brain_sources s
-                where s.organization_id = :org
-                  and s.created_at < now() - (:days * interval '1 day')
-                  and not exists (
-                      select 1 from brain_chunks c where c.source_id = s.id
-                  )
-            """),
-            {"org": str(org_id), "days": retention_days},
+        r = cast(
+            CursorResult,
+            await db.execute(
+                text("""
+                    delete from brain_sources s
+                    where s.organization_id = :org
+                      and s.created_at < now() - (:days * interval '1 day')
+                      and not exists (
+                          select 1 from brain_chunks c where c.source_id = s.id
+                      )
+                """),
+                {"org": str(org_id), "days": retention_days},
+            ),
         )
         deleted["brain_sources"] = r.rowcount
     except Exception as e:

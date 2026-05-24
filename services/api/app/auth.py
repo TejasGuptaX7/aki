@@ -255,7 +255,12 @@ async def verify(request: Request) -> Principal:
     try:
         header = jwt.get_unverified_header(token)
         key = next(k for k in jwks.get("keys", []) if k["kid"] == header["kid"])
+        # JWK conversion returns a union; for "use":"sig" keys this is always a
+        # public key — narrow for mypy.
         public_key = jwt.algorithms.RSAAlgorithm.from_jwk(key)
+        from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
+
+        assert isinstance(public_key, RSAPublicKey)
         claims = jwt.decode(
             token,
             public_key,

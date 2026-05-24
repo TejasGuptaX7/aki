@@ -23,6 +23,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
+from sqlalchemy import delete as sa_delete
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -99,7 +100,7 @@ async def oauth_start(
     # Dedupe: cleanup any stale pending rows for this (org, provider) so the
     # /connect page doesn't accumulate them on repeated click-throughs.
     await db.execute(
-        Connection.__table__.delete().where(
+        sa_delete(Connection).where(
             (Connection.organization_id == principal.organization_id)
             & (Connection.provider == provider)
             & (Connection.status == "pending")

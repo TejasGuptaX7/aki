@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import text
@@ -111,45 +112,45 @@ async def retrieve(
     )
 
     # Reciprocal rank fusion: score = sum over lists of 1 / (k + rank).
-    fused: dict[UUID, dict] = {}
-    for rank, row in enumerate(vec_rows):
-        cid = row["chunk_id"]
-        fused.setdefault(cid, dict(row))
+    fused: dict[UUID, dict[str, Any]] = {}
+    for rank, vrow in enumerate(vec_rows):
+        cid = vrow["chunk_id"]
+        fused.setdefault(cid, dict(vrow))
         fused[cid]["_score"] = fused[cid].get("_score", 0.0) + 1.0 / (RRF_CONSTANT + rank + 1)
-    for rank, row in enumerate(bm25_rows):
-        cid = row["chunk_id"]
-        fused.setdefault(cid, dict(row))
+    for rank, brow in enumerate(bm25_rows):
+        cid = brow["chunk_id"]
+        fused.setdefault(cid, dict(brow))
         fused[cid]["_score"] = fused[cid].get("_score", 0.0) + 1.0 / (RRF_CONSTANT + rank + 1)
 
     # ACL filter — snapshot intersection first, then optional live recheck.
     # We do the cheap snapshot check inline and only live-check survivors.
-    snapshot_eligible = []
-    for row in fused.values():
-        acl = row.get("acl_principals") or []
+    snapshot_eligible: list[dict[str, Any]] = []
+    for entry in fused.values():
+        acl = entry.get("acl_principals") or []
         if isinstance(acl, list) and principal_set.intersection(map(str, acl)):
-            snapshot_eligible.append(row)
+            snapshot_eligible.append(entry)
 
     snapshot_eligible.sort(key=lambda r: r["_score"], reverse=True)
 
     # Live recheck — applied only to the top candidates so we don't pay
     # provider RTTs on rows the user will never see.
-    eligible: list[dict] = []
-    for row in snapshot_eligible[: k * 2]:  # 2× headroom for ACL drops
+    eligible: list[dict[str, Any]] = []
+    for entry in snapshot_eligible[: k * 2]:  # 2× headroom for ACL drops
         allowed = await is_allowed(
-            row["source_id"],
-            row.get("origin") or "",
-            row.get("uri"),
-            row.get("acl_principals") or [],
+            entry["source_id"],
+            entry.get("origin") or "",
+            entry.get("uri"),
+            entry.get("acl_principals") or [],
             principal_set,
             org_id=org_id,
         )
         if allowed:
-            eligible.append(row)
+            eligible.append(entry)
         if len(eligible) >= k:
             break
 
     # Cross-encoder rerank the ACL-filtered candidates for better ordering.
-    passages = [row["content"] for row in eligible[:k]]
+    passages = [entry["content"] for entry in eligible[:k]]
     reranked = rerank(query, passages, top_k=k)
 
     hits: list[BrainHit] = []

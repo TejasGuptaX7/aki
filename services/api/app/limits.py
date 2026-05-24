@@ -52,9 +52,12 @@ async def configure_limiters() -> None:
         r = redis.from_url(settings.redis_url, decode_responses=True)
         await r.ping()
 
-        # Redis is available — reconfigure both limiters
-        limiter._storage = RedisStorage(r, prefix="rl:global")
-        org_limiter._storage = RedisStorage(r, prefix="rl:org")
+        # Redis is available — reconfigure both limiters. Our minimal
+        # RedisStorage doesn't formally inherit from limits' Storage base
+        # because it only implements the slice of the interface slowapi
+        # actually calls (incr); structural duck-typing matches at runtime.
+        limiter._storage = RedisStorage(r, prefix="rl:global")  # type: ignore[assignment]
+        org_limiter._storage = RedisStorage(r, prefix="rl:org")  # type: ignore[assignment]
         log.info("rate limiting configured with Redis backend")
     except Exception:
         log.warning(

@@ -23,9 +23,14 @@ def _configure_logging() -> None:
     """Structured JSON logging for production; pretty text for dev."""
     settings = get_settings()
     try:
+        # `processors` is heterogeneous; structlog's `configure` accepts any
+        # callable matching its Processor protocol. Annotate as Any so mypy
+        # doesn't try to infer list[object] from the mixed callable types.
+        from typing import Any as _Any
+
         import structlog
 
-        processors = [
+        processors: list[_Any] = [
             structlog.contextvars.merge_contextvars,
             structlog.processors.add_log_level,
             structlog.processors.TimeStamper(fmt="iso"),
@@ -129,7 +134,7 @@ app = FastAPI(
 # Rate limiting (slowapi)
 app.state.limiter = limiter
 app.add_middleware(SlowAPIMiddleware)
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
 
 # Structured access logging
 app.add_middleware(AccessLogMiddleware)

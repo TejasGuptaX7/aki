@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 import httpx
@@ -117,12 +117,17 @@ async def dispatch_job(ctx: dict, job_id_str: str, org_id_str: str) -> dict:
 
         # Optimistic claim: set running. If somebody else already claimed,
         # this UPDATE updates 0 rows and we exit.
-        result = await db.execute(
-            text("""
-                update jobs set status = 'running', updated_at = now()
-                where id = :id and status in ('queued', 'failed', 'waiting_human')
-            """),
-            {"id": str(job_id)},
+        from sqlalchemy import CursorResult
+
+        result = cast(
+            CursorResult,
+            await db.execute(
+                text("""
+                    update jobs set status = 'running', updated_at = now()
+                    where id = :id and status in ('queued', 'failed', 'waiting_human')
+                """),
+                {"id": str(job_id)},
+            ),
         )
         if result.rowcount == 0:
             await db.commit()
